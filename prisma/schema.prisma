@@ -1,0 +1,202 @@
+// MoodleScout v2 — Schéma de base
+// UN-CHK DITSI
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────
+
+enum UserRole {
+  admin
+  auditeur
+}
+
+enum AuditStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum LlmProvider {
+  ollama
+  anthropic
+}
+
+// ─── Utilisateurs (synchronisés depuis Keycloak) ──────────────
+
+model User {
+  id                String    @id @default(uuid())
+  // Sub Keycloak (identifiant unique de l'utilisateur dans le realm)
+  kcSub             String    @unique @map("kc_sub")
+  email             String
+  preferredUsername String    @map("preferred_username")
+  givenName         String?   @map("given_name")
+  familyName        String?   @map("family_name")
+  fullName          String?   @map("full_name")
+  // Direction Keycloak. Ne sert qu'à l'attribution automatique du rôle
+  // au premier login (DITSI -> admin, autres -> auditeur). Modifiable ensuite
+  // manuellement par un admin sans risque d'écrasement au login suivant.
+  direction         String?
+  role              UserRole  @default(auditeur)
+  isActive          Boolean   @default(true) @map("is_active")
+  lastLogin         DateTime? @map("last_login")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  auditSessions AuditSession[]
+
+  @@index([kcSub])
+  @@index([direction])
+  @@map("users")
+}
+
+// ─── Plateformes Moodle déclarées ─────────────────────────────
+
+model MoodlePlatform {
+  id          String    @id @default(uuid())
+  name        String
+  url         String
+  // Token webservice Moodle chiffré AES-256-GCM (lib/crypto.ts)
+  tokenEnc    String    @map("token_enc")
+  // "3" ou "4" selon version Moodle (impact sur certains endpoints WS)
+  version     String    @default("4")
+  siteName    String?   @map("site_name")
+  release     String?
+  lastCheckAt DateTime? @map("last_check_at")
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  auditSessions AuditSession[]
+
+  @@map("moodle_platforms")
+}
+
+// ─── Configurations LLM (Ollama souverain ou Anthropic) ───────
+
+model LlmConfig {
+  id          String      @id @default(uuid())
+  name        String
+  provider    LlmProvider
+  // URL de l'API. Pour Ollama = base URL (ex: https://fromager.unchk.sn).
+  // Pour Anthropic, peut rester null (utilise l'URL par défaut du SDK).
+  apiUrl      String?     @map("api_url")
+  // Clé API chiffrée AES-256-GCM. Bearer pour Ollama, x-api-key pour Anthropic.
+  apiKeyEnc   String?     @map("api_key_enc")
+  model       String      @default("gemma3:12b")
+  isDefault   Boolean     @default(false) @map("is_default")
+  isActive    Boolean     @default(true) @map("is_active")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  auditSessions AuditSession[]
+
+  @@index([isDefault])
+  @@map("llm_configs")
+}
+
+// ─── Sessions d'audit (1 audit = 1 utilisateur × 1 plateforme × 1 LLM) ─
+
+model AuditSession {
+  id             String      @id @default(uuid())
+  // Clé lisible (ex: "audit_2026_05_08_12_39") affichée dans l'UI et utilisée pour l'export
+  sessionKey     String      @unique @map("session_key")
+  name           String?
+  status         AuditStatus @default(pending)
+
+  totalCourses   Int         @default(0) @map("total_courses")
+  doneCourses    Int         @default(0) @map("done_courses")
+  failedCourses  Int         @default(0) @map("failed_courses")
+
+  extractImages  Boolean     @default(true) @map("extract_images")
+  quizDetail     String      @default("both") @map("quiz_detail")
+  // Filtre éventuel par catégories Moodle (array de strings)
+  categoriesJson Json?       @map("categories_json")
+
+  startedAt      DateTime?   @map("started_at")
+  finishedAt     DateTime?   @map("finished_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  userId         String      @map("user_id")
+  user           User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  platformId     String      @map("platform_id")
+  platform       MoodlePlatform @relation(fields: [platformId], references: [id], onDelete: Restrict)
+
+  llmConfigId    String      @map("llm_config_id")
+  llmConfig      LlmConfig   @relation(fields: [llmConfigId], references: [id], onDelete: Restrict)
+
+  courseAudits   CourseAudit[]
+  analysisJobs   AnalysisJob[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([sessionKey])
+  @@map("audit_sessions")
+}
+
+// ─── Résultat d'audit par cours (1 ligne = 1 cours analysé) ────
+
+model CourseAudit {
+  id              String   @id @default(uuid())
+  // ID Moodle du cours (clé fonctionnelle dans la plateforme source)
+  courseId        Int      @map("course_id")
+  shortname       String
+  fullname        String
+  categoryName    String?  @map("category_name")
+  categoryPath    String?  @map("category_path")
+  visible         Boolean  @default(true)
+
+  enrolledCount   Int?     @map("enrolled_count")
+  sectionsCount   Int?     @map("sections_count")
+  activitiesCount Int?     @map("activities_count")
+  quizCount       Int?     @map("quiz_count")
+  assignsCount    Int?     @map("assigns_count")
+  teachersCount   Int?     @map("teachers_count")
+
+  // Réponse complète du LLM (parsée en JSON). Postgres stocke en JSONB → requêtable.
+  resultJson      Json     @map("result_json")
+  scoreGlobal     Int?     @map("score_global")
+
+  errorMessage    String?  @map("error_message")
+  durationMs      Int?     @map("duration_ms")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  sessionId       String   @map("session_id")
+  session         AuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, courseId])
+  @@index([sessionId])
+  @@index([scoreGlobal])
+  @@map("course_audits")
+}
+
+// ─── Suivi des jobs BullMQ (pour reprise/diagnostic) ──────────
+
+model AnalysisJob {
+  id           String    @id @default(uuid())
+  // ID retourné par BullMQ — permet de relier à la queue Redis
+  bullJobId    String?   @unique @map("bull_job_id")
+  // pending | active | completed | failed (mirror du status BullMQ)
+  status       String    @default("pending")
+  attempts     Int       @default(0)
+  errorMessage String?   @map("error_message")
+  startedAt    DateTime? @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  sessionId    String    @map("session_id")
+  session      AuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([status])
+  @@map("analysis_jobs")
+}
