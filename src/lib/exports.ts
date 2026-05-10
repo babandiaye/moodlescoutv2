@@ -269,128 +269,392 @@ const PDF_GREEN = '#1E8449'
 const PDF_ORANGE = '#D68910'
 const PDF_RED = '#A93226'
 
+const PDF_BG_GREEN = '#E8F5E9'
+const PDF_BG_ORANGE = '#FFF3E0'
+const PDF_BG_RED = '#FFEBEE'
+
 function scoreColor(score: number): string {
   if (score >= 75) return PDF_GREEN
   if (score >= 50) return PDF_ORANGE
   return PDF_RED
 }
 
+function scoreBgColor(score: number): string {
+  if (score >= 75) return PDF_BG_GREEN
+  if (score >= 50) return PDF_BG_ORANGE
+  return PDF_BG_RED
+}
+
+function scoreLabel(score: number): string {
+  if (score >= 90) return 'Excellent'
+  if (score >= 75) return 'Très bon'
+  if (score >= 50) return 'À améliorer'
+  return 'Non conforme'
+}
+
+type Align = 'left' | 'center' | 'right'
+
+function drawTextCell(
+  doc: PDFKit.PDFDocument,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  text: string,
+  opts: {
+    align?: Align
+    color?: string
+    fontSize?: number
+    bold?: boolean
+    padding?: number
+    valign?: 'top' | 'middle'
+  } = {},
+) {
+  const pad = opts.padding ?? 6
+  const align: Align = opts.align ?? 'left'
+  const fontSize = opts.fontSize ?? 9
+  const color = opts.color ?? '#000000'
+  doc.font(opts.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize).fillColor(color)
+  const textWidth = width - 2 * pad
+  const textHeight = doc.heightOfString(text || ' ', { width: textWidth, align })
+  const ty =
+    opts.valign === 'middle'
+      ? y + Math.max(pad, (height - textHeight) / 2)
+      : y + pad
+  doc.text(text, x + pad, ty, { width: textWidth, align })
+}
+
+type TableCol = { label: string; width: number; align?: Align }
+type TableCell =
+  | string
+  | { text: string; fill?: string; color?: string; bold?: boolean; fontSize?: number }
+
+/**
+ * Mini-moteur de tableau au-dessus de PDFKit.
+ * - Mesure la hauteur réelle du texte de chaque cellule (heightOfString) puis
+ *   prend le max comme hauteur de ligne -> empêche le débordement "Durée".
+ * - Trace rectangle (remplissage facultatif) + bordure 0.5pt + texte centré
+ *   verticalement.
+ */
+function drawTable(
+  doc: PDFKit.PDFDocument,
+  startY: number,
+  cols: TableCol[],
+  rows: TableCell[][],
+  opts: {
+    headerFill?: string
+    headerColor?: string
+    border?: string
+    fontSize?: number
+    headerFontSize?: number
+    padding?: number
+    minRowHeight?: number
+  } = {},
+): number {
+  const startX = doc.page.margins.left
+  const fontSize = opts.fontSize ?? 9
+  const headerFontSize = opts.headerFontSize ?? 10
+  const padding = opts.padding ?? 6
+  const headerFill = opts.headerFill ?? PDF_C1
+  const headerColor = opts.headerColor ?? '#FFFFFF'
+  const border = opts.border ?? '#CCCCCC'
+  const minRowHeight = opts.minRowHeight ?? 28
+
+  const headerHeight = Math.max(24, headerFontSize + 2 * padding)
+  let cx = startX
+  for (const col of cols) {
+    doc.rect(cx, startY, col.width, headerHeight).fill(headerFill)
+    drawTextCell(doc, cx, startY, col.width, headerHeight, col.label, {
+      align: col.align ?? 'center',
+      color: headerColor,
+      fontSize: headerFontSize,
+      bold: true,
+      padding,
+      valign: 'middle',
+    })
+    cx += col.width
+  }
+  let y = startY + headerHeight
+
+  for (const row of rows) {
+    doc.font('Helvetica').fontSize(fontSize)
+    let rowHeight = 0
+    for (let i = 0; i < cols.length; i++) {
+      const cell = row[i] ?? ''
+      const text = typeof cell === 'string' ? cell : cell.text
+      const fs = typeof cell === 'object' && cell.fontSize ? cell.fontSize : fontSize
+      doc.fontSize(fs)
+      const w = cols[i].width - 2 * padding
+      const h = doc.heightOfString(text || ' ', { width: w, align: cols[i].align ?? 'left' })
+      if (h > rowHeight) rowHeight = h
+    }
+    rowHeight = Math.max(minRowHeight, rowHeight + 2 * padding)
+
+    cx = startX
+    for (let i = 0; i < cols.length; i++) {
+      const cell = row[i] ?? ''
+      const text = typeof cell === 'string' ? cell : cell.text
+      const fill = typeof cell === 'object' ? cell.fill : undefined
+      const color = typeof cell === 'object' ? cell.color : undefined
+      const bold = typeof cell === 'object' ? !!cell.bold : false
+      const cellFontSize =
+        typeof cell === 'object' && cell.fontSize ? cell.fontSize : fontSize
+
+      if (fill) {
+        doc.rect(cx, y, cols[i].width, rowHeight).fill(fill)
+      }
+      doc
+        .lineWidth(0.5)
+        .strokeColor(border)
+        .rect(cx, y, cols[i].width, rowHeight)
+        .stroke()
+
+      drawTextCell(doc, cx, y, cols[i].width, rowHeight, text, {
+        align: cols[i].align ?? 'left',
+        color: color ?? '#000000',
+        fontSize: cellFontSize,
+        bold,
+        padding,
+        valign: 'middle',
+      })
+      cx += cols[i].width
+    }
+    y += rowHeight
+  }
+  return y
+}
+
+function formatList(items: string[], sep: string): string {
+  return items
+    .map(o => String(o).trim())
+    .filter(Boolean)
+    .map(o => (o.endsWith('.') ? o : o + '.'))
+    .join(sep)
+}
+
 export async function exportToPdf(courses: CourseData[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: 'A4',
-      margins: { top: 50, bottom: 50, left: 45, right: 45 },
-      info: { Title: 'MoodleScout v2 — Rapport audit', Author: 'UN-CHK DITSI' },
+      margins: { top: 45, bottom: 45, left: 45, right: 45 },
+      info: { Title: "MoodleScout — Rapport d'Audit", Author: 'UN-CHK DITSI' },
     })
     const chunks: Buffer[] = []
     doc.on('data', c => chunks.push(c))
     doc.on('end', () => resolve(Buffer.concat(chunks)))
     doc.on('error', reject)
 
-    // En-tête
-    doc.fillColor(PDF_C1).fontSize(20).text('MoodleScout v2', { align: 'center' })
-    doc.fillColor('#666').fontSize(9).text('Rapport audit pédagogique — UN-CHK DITSI', {
-      align: 'center',
-    })
-    doc.moveDown(0.3)
-    doc.fillColor('#999').fontSize(8).text(
-      `Généré le ${new Date().toLocaleString('fr-FR')} — ${courses.length} cours`,
-      { align: 'center' },
-    )
-    doc.moveDown(1)
+    const ml = doc.page.margins.left
+    const pageWidth = doc.page.width - ml - doc.page.margins.right // ~505pt sur A4
+    const colW5 = pageWidth / 5
 
-    // Synthèse globale
     const totalCourses = courses.length
     const moy =
       totalCourses > 0
-        ? Math.round(courses.reduce((s, c) => s + Number(c.score_global ?? 0), 0) / totalCourses)
+        ? Math.round(
+            courses.reduce((s, c) => s + Number(c.score_global ?? 0), 0) / totalCourses,
+          )
         : 0
-    const conformes = courses.filter(c => (c.score_global ?? 0) >= 75).length
-    const aAmeliorer = courses.filter(
-      c => (c.score_global ?? 0) >= 50 && (c.score_global ?? 0) < 75,
-    ).length
-    const nonConformes = courses.filter(c => (c.score_global ?? 0) < 50).length
+    const totalInscrits = courses.reduce((s, c) => s + Number(c.nb_inscrits ?? 0), 0)
+    const totalQuiz = courses.reduce((s, c) => s + Number(c.nb_quiz ?? 0), 0)
+    const conformes = courses.filter(c => Number(c.score_global ?? 0) >= 75).length
 
-    doc.fillColor(PDF_C2).fontSize(13).text('Synthèse')
-    doc.moveDown(0.3)
-    doc.fillColor('#000').fontSize(10)
-    doc.text(`Score moyen : ${moy}/100`)
-    doc.text(`Conformes (≥75) : ${conformes}`)
-    doc.text(`A améliorer (50–74) : ${aAmeliorer}`)
-    doc.text(`Non conformes (<50) : ${nonConformes}`)
-    doc.moveDown(1)
+    // ── En-tête général ────────────────────────────────────────────
+    // Titre puis sous-titre EN-DESSOUS avec un moveDown explicite : empêche
+    // le chevauchement observé dans l'ancienne version (capture utilisateur).
+    doc.font('Helvetica-Bold').fontSize(22).fillColor(PDF_C1)
+    doc.text("MoodleScout — Rapport d'Audit", ml, doc.page.margins.top, {
+      width: pageWidth,
+      align: 'center',
+    })
+    doc.moveDown(0.5)
 
-    // Détail par cours
+    const now = new Date()
+    const dateStr = `${now.toLocaleDateString('fr-FR')} ${now.toLocaleTimeString('fr-FR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })}`
+    doc.font('Helvetica').fontSize(10).fillColor('#7F8C8D')
+    doc.text(
+      `UN-CHK DITSI | ${dateStr} | ${totalCourses} cours analysés`,
+      ml,
+      doc.y,
+      { width: pageWidth, align: 'center' },
+    )
+
+    const sepY = doc.y + 10
+    doc
+      .lineWidth(1.5)
+      .strokeColor(PDF_C1)
+      .moveTo(ml, sepY)
+      .lineTo(ml + pageWidth, sepY)
+      .stroke()
+
+    // ── Synthèse globale ───────────────────────────────────────────
+    let nextY = drawTable(
+      doc,
+      sepY + 18,
+      [
+        { label: 'Cours', width: colW5, align: 'center' },
+        { label: 'Score moyen', width: colW5, align: 'center' },
+        { label: 'Inscrits', width: colW5, align: 'center' },
+        { label: 'Quiz', width: colW5, align: 'center' },
+        { label: 'Score ≥ 75', width: colW5, align: 'center' },
+      ],
+      [
+        [
+          { text: String(totalCourses), bold: true, color: PDF_C1, fontSize: 16 },
+          { text: `${moy}/100`, bold: true, color: PDF_C1, fontSize: 16 },
+          { text: String(totalInscrits), bold: true, color: PDF_C1, fontSize: 16 },
+          { text: String(totalQuiz), bold: true, color: PDF_C1, fontSize: 16 },
+          { text: String(conformes), bold: true, color: PDF_C1, fontSize: 16 },
+        ],
+      ],
+      { headerFill: PDF_C1, minRowHeight: 40 },
+    )
+
+    // ── Par cours ──────────────────────────────────────────────────
     courses.forEach((c, idx) => {
-      if (idx > 0) doc.addPage()
+      if (idx === 0) {
+        doc.x = ml
+        doc.y = nextY + 18
+      } else {
+        doc.addPage()
+        doc.x = ml
+        doc.y = doc.page.margins.top
+      }
       const score = Number(c.score_global ?? 0)
-      doc.fillColor(PDF_C1).fontSize(14).text(c.fullname ?? '—')
-      doc.fillColor('#666').fontSize(9).text(
-        `${c.shortname ?? ''} — ${c.platform ?? ''} — ${c.category ?? ''}`,
+      const ai = c.ai ?? {}
+
+      doc.font('Helvetica-Bold').fontSize(15).fillColor(PDF_C1)
+      doc.text(`${c.shortname ?? ''} — ${c.fullname ?? '—'}`, ml, doc.y, {
+        width: pageWidth,
+        align: 'left',
+      })
+
+      const subParts: string[] = []
+      if (c.platform) subParts.push(String(c.platform))
+      if (c.category) subParts.push(`(${c.category})`)
+      subParts.push(`(Moodle ${c.moodle_version ?? '4'}.x)`)
+      const subline = [
+        subParts.join(' '),
+        `${c.nb_inscrits ?? 0} inscrits`,
+        c.visible ? 'Visible' : 'Masqué',
+        `Créé ${c.year_created ?? '—'}`,
+        `Révisé ${c.year_modified ?? '—'}`,
+      ].join(' | ')
+      doc.font('Helvetica').fontSize(9).fillColor('#7F8C8D')
+      doc.text(subline, ml, doc.y + 2, { width: pageWidth, align: 'left' })
+
+      // Table scores (5 colonnes, header bleu clair, cellule Score colorée)
+      nextY = drawTable(
+        doc,
+        doc.y + 12,
+        [
+          { label: 'Score', width: colW5, align: 'center' },
+          { label: 'Pertinence', width: colW5, align: 'center' },
+          { label: 'Évaluation', width: colW5, align: 'center' },
+          { label: 'Structure', width: colW5, align: 'center' },
+          { label: 'Engagement', width: colW5, align: 'center' },
+        ],
+        [
+          [
+            {
+              text: `${score}/100\n${scoreLabel(score)}`,
+              bold: true,
+              color: scoreColor(score),
+              fill: scoreBgColor(score),
+              fontSize: 12,
+            },
+            `${ai.pertinence_contenu ?? 0}/10`,
+            `${ai.qualite_evaluation ?? 0}/10`,
+            `${ai.structure_pedagogique ?? 0}/10`,
+            `${ai.engagement_prevu ?? 0}/10`,
+          ],
+        ],
+        { headerFill: PDF_C2, minRowHeight: 44 },
       )
-      doc.moveDown(0.5)
 
-      doc.fillColor(scoreColor(score)).fontSize(24).text(`${score}/100`, { continued: false })
-      doc.fillColor('#666').fontSize(9).text(c.conformite_statut ?? '')
-      doc.moveDown(0.5)
+      // Table stats (8 colonnes, header vert).
+      // Niveau et Durée sont élargies pour absorber un libellé long type
+      // "(1 semaine pour les généralités, 2 semaines pour le bilan...)"
+      // sans déborder sur la colonne voisine (bug capture).
+      const sw1 = 70
+      const sw2 = 105
+      const swRest = (pageWidth - sw1 - sw2) / 6
+      nextY = drawTable(
+        doc,
+        nextY + 2,
+        [
+          { label: 'Niveau', width: sw1, align: 'center' },
+          { label: 'Durée', width: sw2, align: 'center' },
+          { label: 'Inscrits', width: swRest, align: 'center' },
+          { label: 'Enseignants', width: swRest, align: 'center' },
+          { label: 'Sections', width: swRest, align: 'center' },
+          { label: 'Activités', width: swRest, align: 'center' },
+          { label: 'Quiz', width: swRest, align: 'center' },
+          { label: 'Devoirs', width: swRest, align: 'center' },
+        ],
+        [
+          [
+            String(ai.niveau ?? '—'),
+            String(ai.duree_estimee ?? '—'),
+            String(c.nb_inscrits ?? 0),
+            String(c.nb_enseignants ?? 0),
+            String(c.nb_sections ?? 0),
+            String(c.nb_activites ?? 0),
+            String(c.nb_quiz ?? 0),
+            String(c.nb_devoirs ?? 0),
+          ],
+        ],
+        { headerFill: PDF_GREEN, minRowHeight: 32 },
+      )
 
-      doc.fillColor('#000').fontSize(9)
-      const stats: Array<[string, string | number]> = [
-        ['Inscrits', c.nb_inscrits ?? 0],
-        ['Enseignants', c.nb_enseignants ?? 0],
-        ['Tuteurs', c.nb_tuteurs ?? 0],
-        ['Sections', c.nb_sections ?? 0],
-        ['Activités', c.nb_activites ?? 0],
-        ['Quiz', c.nb_quiz ?? 0],
-        ['Devoirs', c.nb_devoirs ?? 0],
-        ['Forums', c.nb_forums ?? 0],
-        ['Vidéo', c.has_video ? 'Oui' : 'Non'],
-        ['Conformité', `${c.conformite_pct ?? 0}%`],
-      ]
-      stats.forEach(([k, v]) => doc.text(`${k} : ${v}`))
-      doc.moveDown(0.5)
+      doc.x = ml
+      doc.y = nextY + 14
 
-      if (c.ai?.description_courte) {
-        doc.fillColor(PDF_C2).fontSize(11).text('Description IA')
-        doc.fillColor('#000').fontSize(9).text(c.ai.description_courte)
-        doc.moveDown(0.5)
+      // ── Détails (label gras + valeur courante, comme la capture) ──
+      const writeLabelValue = (label: string, value: string, italic = false) => {
+        doc.x = ml
+        doc
+          .font('Helvetica-Bold')
+          .fontSize(9)
+          .fillColor('#000')
+          .text(`${label} : `, { continued: true, width: pageWidth })
+        doc
+          .font(italic ? 'Helvetica-Oblique' : 'Helvetica')
+          .fillColor('#333')
+          .text(value, { width: pageWidth })
+        doc.moveDown(0.3)
       }
 
-      if (c.ai?.objectifs_pedagogiques?.length) {
-        doc.fillColor(PDF_C2).fontSize(11).text('Objectifs pédagogiques')
-        doc.fillColor('#000').fontSize(9)
-        for (const o of c.ai.objectifs_pedagogiques) doc.text(`• ${o}`)
-        doc.moveDown(0.5)
+      if (ai.description_courte) writeLabelValue('Description', String(ai.description_courte))
+      if (ai.infos_image) writeLabelValue('Infos image', String(ai.infos_image))
+      if (ai.public_cible) writeLabelValue('Public cible', String(ai.public_cible))
+      if (ai.domaine) writeLabelValue('Domaine', String(ai.domaine))
+
+      const animList = (c.animateurs ?? []) as any[]
+      if (animList.length) {
+        const animTxt = animList
+          .map(a => `${a.nom ?? 'Inconnu'}${a.role_label ? ` ${a.role_label}` : ''}`)
+          .join(' , ')
+        writeLabelValue('Animateurs', animTxt)
       }
 
-      if (c.ai?.points_forts?.length) {
-        doc.fillColor(PDF_GREEN).fontSize(11).text('Points forts')
-        doc.fillColor('#000').fontSize(9)
-        for (const p of c.ai.points_forts) doc.text(`• ${p}`)
-        doc.moveDown(0.5)
+      if (ai.objectifs_pedagogiques?.length) {
+        writeLabelValue('Objectifs', formatList(ai.objectifs_pedagogiques as string[], ' ; '))
       }
-
-      if (c.ai?.points_faibles?.length) {
-        doc.fillColor(PDF_RED).fontSize(11).text('Points faibles')
-        doc.fillColor('#000').fontSize(9)
-        for (const p of c.ai.points_faibles) doc.text(`• ${p}`)
-        doc.moveDown(0.5)
+      if (ai.points_forts?.length) {
+        writeLabelValue('Points forts', formatList(ai.points_forts as string[], ' · '))
       }
-
-      if (c.ai?.recommandations?.length) {
-        doc.fillColor(PDF_ORANGE).fontSize(11).text('Recommandations')
-        doc.fillColor('#000').fontSize(9)
-        for (const r of c.ai.recommandations) doc.text(`• ${r}`)
-        doc.moveDown(0.5)
+      if (ai.points_faibles?.length) {
+        writeLabelValue('Points faibles', formatList(ai.points_faibles as string[], ' · '))
       }
-
-      if (c.animateurs?.length) {
-        doc.fillColor(PDF_C2).fontSize(11).text('Animateurs')
-        doc.fillColor('#000').fontSize(9)
-        for (const a of c.animateurs) {
-          const line = `• ${a.nom}${a.role_label ? ` — ${a.role_label}` : ''}${a.email ? ` — ${a.email}` : ''}`
-          doc.text(line)
-        }
+      if (ai.recommandations?.length) {
+        writeLabelValue('Recommandations', formatList(ai.recommandations as string[], ' · '))
+      }
+      if (ai.justification_score) {
+        writeLabelValue('Justification', String(ai.justification_score), true)
       }
     })
 

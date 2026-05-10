@@ -19,10 +19,20 @@ type Stats = {
   release: string | null
   version: string | null
   nbUsers: number | null
-  /** Détail par méthode d'auth Moodle (manual, oidc, etc.) */
+  /** Détail par méthode d'auth Moodle (manual, oidc, etc.) ou enrôlement selon la méthode */
   usersBreakdown: Record<string, number> | null
   /** True si au moins une méthode d'auth a échoué (total est borne basse) */
   usersBreakdownPartial: boolean
+  /** Premier message d'erreur Moodle si nbUsers est null (capability manquante, etc.) */
+  usersError: string | null
+  /**
+   * Méthode utilisée pour compter :
+   * - 'auth-list' : core_user_get_users sommé par auth (= comptes totaux)
+   * - 'enrolment' : core_enrol_get_enrolled_users distinct (= users inscrits ≥1 cours)
+   */
+  usersMethod: 'auth-list' | 'enrolment'
+  /** Nombre de cours scannés (pertinent uniquement en mode 'enrolment') */
+  usersNbCoursesScanned: number | null
   computedAt: string
   durationMs: number
   cached: boolean
@@ -80,9 +90,12 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       sitename: siteInfo?.sitename ?? null,
       release: siteInfo?.release ?? null,
       version: siteInfo?.version ?? null,
-      nbUsers: usersResult?.total ?? null,
-      usersBreakdown: usersResult?.breakdown ?? null,
-      usersBreakdownPartial: usersResult?.partial ?? false,
+      nbUsers: usersResult.total,
+      usersBreakdown: Object.keys(usersResult.breakdown).length > 0 ? usersResult.breakdown : null,
+      usersBreakdownPartial: usersResult.partial,
+      usersError: usersResult.errors[0] ?? null,
+      usersMethod: usersResult.method,
+      usersNbCoursesScanned: usersResult.nbCoursesScanned ?? null,
       computedAt: new Date().toISOString(),
       durationMs: Date.now() - start,
       cached: false,

@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio'
 import { createHash } from 'node:crypto'
 import { redis } from './redis'
 import { logger } from './logger'
+import { pLimit } from './concurrency'
 
 const MOODLE_RETRY_ATTEMPTS = 2 // 1 essai initial + 1 retry
 const MOODLE_RETRY_DELAY_MS = 2000
@@ -154,14 +155,24 @@ export async function getSiteInfo(baseUrl: string, token: string): Promise<Moodl
 }
 
 export type UsersCountResult = {
-  /** Total cumulé sur toutes les méthodes ayant répondu. */
-  total: number
+  /** Total cumulé. null = toutes les méthodes ont échoué (voir errors[]). */
+  total: number | null
   /** Détail par méthode d'auth, uniquement les méthodes ayant répondu avec >=1 user. */
   breakdown: Record<string, number>
   /** True si au moins une méthode a échoué (le total est donc une borne basse). */
   partial: boolean
   /** Messages d'erreur des méthodes qui ont échoué (utile pour debug admin). */
   errors: string[]
+  /**
+   * 'auth-list' = core_user_get_users sommé par méthode d'auth (compte tous
+   *   les comptes, capability moodle/user:viewdetails requise).
+   * 'enrolment' = somme distincte via core_enrol_get_enrolled_users sur tous
+   *   les cours (compte uniquement les users inscrits dans ≥1 cours, fallback
+   *   si la capability ci-dessus manque).
+   */
+  method: 'auth-list' | 'enrolment'
+  /** Nombre de cours interrogés (uniquement pertinent en mode 'enrolment'). */
+  nbCoursesScanned?: number
 }
 
 /** Méthodes d'auth Moodle à interroger. Surchargeable via MOODLE_AUTH_METHODS=man,oidc,ldap. */
@@ -189,16 +200,19 @@ function getAuthMethods(): string[] {
  * Robustesse : Promise.allSettled pour qu'un échec partiel ne fasse pas tout perdre.
  * Pagination Moodle : on passe `limitnum: 0` (= illimité côté serveur).
  *
- * Retourne :
- *   - `null` si TOUTES les méthodes ont échoué (capability absente, plugin manquant)
- *   - sinon { total, breakdown, partial, errors }
+ * Capability requise : `moodle/user:viewdetails` ET `moodle/user:viewalldetails`
+ * sur le rôle du token. Sans elles, Moodle renvoie `accessexception` AVANT
+ * l'exécution de la requête (peu importe le critère).
  *
- * Capability requise : `moodle/user:viewdetails` ou équivalent sur le rôle du token.
+ * Retourne TOUJOURS un objet (jamais null) :
+ *   - total === null si toutes les méthodes ont échoué (admin a besoin de voir
+ *     `errors[]` pour comprendre quoi corriger côté Moodle).
+ *   - total === N si au moins une méthode a fulfilled (somme des succès).
  */
 export async function getUsersTotalCount(
   baseUrl: string,
   token: string,
-): Promise<UsersCountResult | null> {
+): Promise<UsersCountResult> {
   const methods = getAuthMethods()
 
   const results = await Promise.allSettled(
@@ -221,11 +235,13 @@ export async function getUsersTotalCount(
   const breakdown: Record<string, number> = {}
   const errors: string[] = []
   let total = 0
+  let anyFulfilled = false
 
   for (let i = 0; i < methods.length; i++) {
     const method = methods[i]
     const r = results[i]
     if (r.status === 'fulfilled' && Array.isArray(r.value?.users)) {
+      anyFulfilled = true
       const count = r.value.users.length
       if (count > 0) {
         breakdown[method] = count
@@ -233,20 +249,40 @@ export async function getUsersTotalCount(
       }
     } else if (r.status === 'rejected') {
       const msg = (r.reason as Error)?.message ?? 'erreur inconnue'
-      errors.push(`${method}: ${msg.slice(0, 100)}`)
+      errors.push(`${method}: ${msg.slice(0, 200)}`)
     }
   }
 
-  // Si aucune méthode n'a même retourné un succès vide → on ne sait rien.
-  // Si au moins une a fulfilled (même avec 0 résultat), c'est qu'on peut
-  // interroger Moodle, donc 0 est une vraie réponse.
-  const anyFulfilled = results.some(r => r.status === 'fulfilled')
   if (!anyFulfilled) {
-    logger.warn(
+    logger.info(
       { baseUrl, errors, methods },
-      'getUsersTotalCount : toutes les méthodes ont échoué',
+      'getUsersTotalCount : auth-list a échoué, fallback enrolment',
     )
-    return null
+    try {
+      const fb = await countDistinctEnrolledUsers(baseUrl, token)
+      return {
+        total: fb.total,
+        breakdown: { 'enrôlés (≥1 cours)': fb.total ?? 0 },
+        partial: fb.partial,
+        // Concat la 1re erreur auth-list + les erreurs enrôlement (tronquées
+        // pour ne pas noyer l'UI).
+        errors: [...errors.slice(0, 1), ...fb.errors.slice(0, 3)],
+        method: 'enrolment',
+        nbCoursesScanned: fb.nbCoursesScanned,
+      }
+    } catch (err) {
+      logger.warn(
+        { baseUrl, err: (err as Error).message },
+        'getUsersTotalCount : fallback enrolment a échoué aussi',
+      )
+      return {
+        total: null,
+        breakdown,
+        partial: false,
+        errors: [...errors, `fallback enrolment: ${(err as Error).message.slice(0, 150)}`],
+        method: 'auth-list',
+      }
+    }
   }
 
   return {
@@ -254,6 +290,92 @@ export async function getUsersTotalCount(
     breakdown,
     partial: errors.length > 0,
     errors,
+    method: 'auth-list',
+  }
+}
+
+/**
+ * Fallback : compte les utilisateurs DISTINCTS inscrits dans ≥1 cours via
+ * core_enrol_get_enrolled_users. Utilisé quand core_user_get_users n'a pas
+ * la capability moodle/user:viewdetails sur le token.
+ *
+ * Capability requise : `moodle/course:viewparticipants` (souvent accordée par
+ * défaut au rôle enseignant/admin, donc plus permissive que viewdetails).
+ *
+ * Coût : 1 appel par cours, parallélisé (10 simultanés). Pour 400 cours :
+ * ~5-10 secondes. On passe `userfields=id` pour réduire chaque payload de
+ * ~22× (240 user × id-only ≈ 11 KB au lieu de ~250 KB avec full profile).
+ *
+ * Limite connue : ne compte PAS les comptes admins/techniques jamais inscrits
+ * dans un cours. Pour une plateforme universitaire normale, l'écart est <1%.
+ */
+async function countDistinctEnrolledUsers(
+  baseUrl: string,
+  token: string,
+): Promise<{
+  total: number | null
+  partial: boolean
+  errors: string[]
+  nbCoursesScanned: number
+}> {
+  const courses = await getCourses(baseUrl, token)
+  // Le cours id=1 est le "Site Course" Moodle (page d'accueil), pas un vrai cours
+  const realCourses = courses.filter(c => c.id !== 1)
+
+  if (realCourses.length === 0) {
+    return { total: 0, partial: false, errors: [], nbCoursesScanned: 0 }
+  }
+
+  const limit = pLimit(10)
+  const userIds = new Set<number>()
+  const errors: string[] = []
+
+  await Promise.all(
+    realCourses.map(c =>
+      limit(async () => {
+        try {
+          const users = await moodleCall<Array<{ id: number }>>(
+            baseUrl,
+            token,
+            'core_enrol_get_enrolled_users',
+            {
+              courseid: c.id,
+              'options[0][name]': 'userfields',
+              'options[0][value]': 'id',
+            },
+          )
+          if (Array.isArray(users)) {
+            for (const u of users) {
+              if (typeof u.id === 'number') userIds.add(u.id)
+            }
+          }
+        } catch (err) {
+          const msg = (err as Error).message ?? 'erreur inconnue'
+          // Cap à 10 erreurs collectées (pour ne pas exploser en mémoire si
+          // la capability manque aussi côté enrolment → 400 erreurs identiques).
+          if (errors.length < 10) errors.push(`cours ${c.id}: ${msg.slice(0, 150)}`)
+        }
+      }),
+    ),
+  )
+
+  // Si TOUS les cours ont échoué, c'est probablement encore un accessexception
+  // (capability moodle/course:viewparticipants manquante aussi). On remonte null
+  // pour que l'UI puisse afficher le bon message d'erreur.
+  if (userIds.size === 0 && errors.length === realCourses.length) {
+    return {
+      total: null,
+      partial: false,
+      errors,
+      nbCoursesScanned: realCourses.length,
+    }
+  }
+
+  return {
+    total: userIds.size,
+    partial: errors.length > 0,
+    errors,
+    nbCoursesScanned: realCourses.length,
   }
 }
 

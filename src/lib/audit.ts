@@ -470,19 +470,9 @@ export async function auditCourse(
     })
   }
 
-  const scIa = Math.min(100, Math.max(0, ai.score_global ?? 0))
-  const bonus =
-    (rich.sections.length >= 3 ? 5 : 0) +
-    (rich.nb_quiz >= 1 ? 5 : 0) +
-    (rich.nb_devoirs >= 1 ? 3 : 0) +
-    (enseignants.length ? 3 : 0) +
-    (tuteurs.length ? 2 : 0) +
-    (summary ? 2 : 0) +
-    (rich.activities.length >= 5 ? 5 : 0) +
-    (images.length ? 2 : 0) +
-    (hasVideo ? 3 : 0)
-  const score = scIa > 0 ? Math.min(100, Math.max(0, scIa + bonus)) : 0
-
+  // Conformité structurelle : 12 critères objectifs (présence enseignant, quiz,
+  // devoir, etc.). Calculée AVANT le score pour pouvoir l'injecter dans la
+  // formule hybride.
   const conformiteChecks = {
     has_enseignant: enseignants.length > 0,
     has_tuteur: tuteurs.length > 0,
@@ -502,6 +492,26 @@ export async function auditCourse(
   const conformitePct = Math.round((nbOk / nbTotal) * 100)
   const conformiteStatut =
     conformitePct >= 80 ? 'Conforme' : conformitePct >= 50 ? 'A améliorer' : 'Non conforme'
+
+  // Score hybride 70/30.
+  // - aiScore : moyenne des 4 sous-scores pédagogiques LLM (sur 100). Reflète
+  //   exactement les barres affichées dans l'UI (Pertinence/Qualité/Structure/
+  //   Engagement) — fini les divergences visuelles.
+  // - structPct : conformité structurelle ci-dessus (mesure objective).
+  // - Garde-fou : si le LLM renvoie score_global=0 (audit échoué / cours vide),
+  //   on force le score final à 0 pour ne pas attribuer de points à un audit
+  //   non fiable.
+  const subAvg =
+    (Number(ai.pertinence_contenu ?? 0) +
+      Number(ai.qualite_evaluation ?? 0) +
+      Number(ai.structure_pedagogique ?? 0) +
+      Number(ai.engagement_prevu ?? 0)) /
+    4
+  const aiScore = Math.min(100, Math.max(0, subAvg * 10))
+  const score =
+    (ai.score_global ?? 0) > 0
+      ? Math.round(Math.min(100, Math.max(0, 0.7 * aiScore + 0.3 * conformitePct)))
+      : 0
 
   let categoryPath: string[] = []
   if (categoriesTree && course.categoryid) {
@@ -564,8 +574,11 @@ export async function auditCourse(
     images_count: images.length,
 
     ai,
-    score_ia: scIa,
-    score_bonus: bonus,
+    // score_ia : composante pédagogique (sous-scores LLM × 10), avant pondération.
+    // score_struct : composante structurelle (= conformite_pct), avant pondération.
+    // score_global : hybride 0.7 * score_ia + 0.3 * score_struct (cf. plus haut).
+    score_ia: Math.round(aiScore),
+    score_struct: conformitePct,
     score_global: score,
 
     conformite_checks: conformiteChecks,

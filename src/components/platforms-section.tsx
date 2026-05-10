@@ -19,6 +19,9 @@ type Stats = {
   nbUsers: number | null
   usersBreakdown: Record<string, number> | null
   usersBreakdownPartial: boolean
+  usersError: string | null
+  usersMethod: 'auth-list' | 'enrolment'
+  usersNbCoursesScanned: number | null
   computedAt: string
   durationMs: number
   cached: boolean
@@ -369,30 +372,59 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
   const total = stats.nbUsers
   const breakdown = stats.usersBreakdown
   const partial = stats.usersBreakdownPartial
+  const error = stats.usersError
+  const method = stats.usersMethod
+  const nbCourses = stats.usersNbCoursesScanned
 
   // Trie le breakdown par valeur décroissante (méthode dominante en premier)
   const sortedBreakdown = breakdown
     ? Object.entries(breakdown).sort((a, b) => b[1] - a[1])
     : []
 
+  const isAccessError = error?.toLowerCase().includes('accessexception')
+  const isInvalidToken = error?.toLowerCase().includes('invalidtoken')
+
   const hintParts: string[] = []
-  if (total === null) {
+  if (total !== null && method === 'enrolment') {
     hintParts.push(
-      "Non disponible — le token Web Services n'a pas le droit core_user_get_users sur les méthodes d'auth interrogées (configurable via MOODLE_AUTH_METHODS).",
+      "Comptage via core_enrol_get_enrolled_users (fallback automatique).",
+      `Compte les users distincts inscrits dans ≥1 cours sur ${nbCourses ?? '?'} cours scannés.`,
+      "Limite : exclut les comptes admins/techniques jamais inscrits.",
+      "Pour un compte exact incluant tous les comptes, accorder côté Moodle :",
+      "  moodle/user:viewdetails  +  moodle/user:viewalldetails",
+      "sur le rôle du token webservice — bascule alors automatiquement sur la méthode directe.",
     )
   }
-  if (partial) {
-    hintParts.push('⚠ Calcul partiel : au moins une méthode d\'auth a échoué.')
-  }
-  if (sortedBreakdown.length > 0) {
+  if (total === null && isAccessError) {
     hintParts.push(
-      'Détail : ' +
+      "Aucune capability disponible pour compter les utilisateurs.",
+      "core_user_get_users ET core_enrol_get_enrolled_users sont refusés.",
+      "Pour corriger côté Moodle (l'une OU l'autre suffit) :",
+      "  Option A — moodle/user:viewdetails + moodle/user:viewalldetails (compte exact)",
+      "  Option B — moodle/course:viewparticipants (compte via inscriptions)",
+      "Erreur reçue : " + error,
+    )
+  } else if (total === null && isInvalidToken) {
+    hintParts.push("Token Web Services invalide ou expiré côté Moodle.")
+    hintParts.push("Erreur Moodle : " + error)
+  } else if (total === null && error) {
+    hintParts.push("Comptage indisponible. Erreur Moodle : " + error)
+  } else if (total === null) {
+    hintParts.push("Comptage indisponible.")
+  }
+  if (partial) {
+    hintParts.push("⚠ Calcul partiel : certains appels ont échoué.")
+    if (error) hintParts.push("Détail : " + error)
+  }
+  if (sortedBreakdown.length > 0 && method === 'auth-list') {
+    hintParts.push(
+      "Méthodes d'auth interrogées : " +
         sortedBreakdown
           .map(([m, c]) => `${m} = ${c.toLocaleString('fr-FR')}`)
           .join(', '),
     )
   }
-  const hint = hintParts.join('\n\n') || undefined
+  const hint = hintParts.join('\n') || undefined
 
   return (
     <div
@@ -414,14 +446,58 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
         style={{
           fontSize: 13,
           fontWeight: 600,
-          color: 'var(--brand)',
+          color: total === null ? 'var(--warn)' : 'var(--brand)',
           lineHeight: 1.3,
           display: 'flex',
           alignItems: 'center',
-          gap: 4,
+          gap: 6,
+          flexWrap: 'wrap',
         }}
       >
         {total !== null ? total.toLocaleString('fr-FR') : 'n/a'}
+        {total !== null && method === 'enrolment' && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: '1px 6px',
+              borderRadius: 4,
+              background: 'var(--info-bg, #d1ecf1)',
+              color: 'var(--info, #0c5460)',
+            }}
+            title="Compte via les inscriptions de cours (fallback). Voir détails au survol."
+          >
+            inscrits
+          </span>
+        )}
+        {total === null && isAccessError && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: '1px 6px',
+              borderRadius: 4,
+              background: 'var(--warn-bg, #fff3cd)',
+              color: 'var(--warn, #856404)',
+            }}
+          >
+            permission Moodle manquante
+          </span>
+        )}
+        {total === null && isInvalidToken && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 500,
+              padding: '1px 6px',
+              borderRadius: 4,
+              background: 'var(--err-bg, #f8d7da)',
+              color: 'var(--err, #721c24)',
+            }}
+          >
+            token invalide
+          </span>
+        )}
         {partial && (
           <span style={{ color: 'var(--warn)', fontSize: 11 }} title="Calcul partiel">
             ⚠

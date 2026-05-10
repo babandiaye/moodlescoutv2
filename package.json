@@ -9,6 +9,7 @@
     "lint": "eslint",
     "worker": "tsx workers/audit-worker.ts",
     "worker:dev": "tsx --watch workers/audit-worker.ts",
+    "backfill:scores": "tsx scripts/backfill-scores.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy"
