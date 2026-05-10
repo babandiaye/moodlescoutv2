@@ -19,6 +19,10 @@ type Stats = {
   release: string | null
   version: string | null
   nbUsers: number | null
+  /** Détail par méthode d'auth Moodle (manual, oidc, etc.) */
+  usersBreakdown: Record<string, number> | null
+  /** True si au moins une méthode d'auth a échoué (total est borne basse) */
+  usersBreakdownPartial: boolean
   computedAt: string
   durationMs: number
   cached: boolean
@@ -64,8 +68,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   try {
     const token = decrypt(platform.tokenEnc)
 
-    // 2 appels parallèles légers : infos site + comptage users.
-    const [siteInfo, nbUsers] = await Promise.all([
+    // 2 appels parallèles : infos site + comptage users (ce dernier somme N
+    // sous-requêtes par méthode d'auth, voir getUsersTotalCount).
+    const [siteInfo, usersResult] = await Promise.all([
       getSiteInfo(platform.url, token).catch(() => null),
       getUsersTotalCount(platform.url, token),
     ])
@@ -75,7 +80,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       sitename: siteInfo?.sitename ?? null,
       release: siteInfo?.release ?? null,
       version: siteInfo?.version ?? null,
-      nbUsers,
+      nbUsers: usersResult?.total ?? null,
+      usersBreakdown: usersResult?.breakdown ?? null,
+      usersBreakdownPartial: usersResult?.partial ?? false,
       computedAt: new Date().toISOString(),
       durationMs: Date.now() - start,
       cached: false,

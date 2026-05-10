@@ -11,6 +11,19 @@ type Platform = {
   createdAt: Date | string
 }
 
+type Stats = {
+  url: string
+  sitename: string | null
+  release: string | null
+  version: string | null
+  nbUsers: number | null
+  usersBreakdown: Record<string, number> | null
+  usersBreakdownPartial: boolean
+  computedAt: string
+  durationMs: number
+  cached: boolean
+}
+
 type Props = {
   initial: Platform[]
 }
@@ -24,16 +37,6 @@ export function PlatformsSection({ initial }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [testing, setTesting] = useState<Record<string, 'loading' | { ok: true; sitename?: string; release?: string; latencyMs: number } | { ok: false; error: string }>>({})
-  type Stats = {
-    url: string
-    sitename: string | null
-    release: string | null
-    version: string | null
-    nbUsers: number | null
-    computedAt: string
-    durationMs: number
-    cached: boolean
-  }
   type StatsState = 'loading' | { error: string } | Stats
   const [stats, setStats] = useState<Record<string, StatsState | undefined>>({})
 
@@ -205,15 +208,7 @@ export function PlatformsSection({ initial }: Props) {
                               value={statsObj.release ? statsObj.release.split(' ')[0] : '—'}
                               hint={statsObj.release ?? undefined}
                             />
-                            <InfoBox
-                              label="Utilisateurs"
-                              value={statsObj.nbUsers !== null ? statsObj.nbUsers.toLocaleString('fr-FR') : 'n/a'}
-                              hint={
-                                statsObj.nbUsers === null
-                                  ? 'Non disponible — le token Web Services n\'a pas le droit `core_user_get_users`'
-                                  : undefined
-                              }
-                            />
+                            <UsersInfoBox stats={statsObj} />
                           </div>
                           <div
                             style={{
@@ -366,6 +361,87 @@ function InfoBox({
       >
         {value}
       </div>
+    </div>
+  )
+}
+
+function UsersInfoBox({ stats }: { stats: Stats }) {
+  const total = stats.nbUsers
+  const breakdown = stats.usersBreakdown
+  const partial = stats.usersBreakdownPartial
+
+  // Trie le breakdown par valeur décroissante (méthode dominante en premier)
+  const sortedBreakdown = breakdown
+    ? Object.entries(breakdown).sort((a, b) => b[1] - a[1])
+    : []
+
+  const hintParts: string[] = []
+  if (total === null) {
+    hintParts.push(
+      "Non disponible — le token Web Services n'a pas le droit core_user_get_users sur les méthodes d'auth interrogées (configurable via MOODLE_AUTH_METHODS).",
+    )
+  }
+  if (partial) {
+    hintParts.push('⚠ Calcul partiel : au moins une méthode d\'auth a échoué.')
+  }
+  if (sortedBreakdown.length > 0) {
+    hintParts.push(
+      'Détail : ' +
+        sortedBreakdown
+          .map(([m, c]) => `${m} = ${c.toLocaleString('fr-FR')}`)
+          .join(', '),
+    )
+  }
+  const hint = hintParts.join('\n\n') || undefined
+
+  return (
+    <div
+      style={{ background: 'var(--surface2)', padding: '8px 10px', borderRadius: 6 }}
+      title={hint}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          color: 'var(--text3)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          marginBottom: 4,
+        }}
+      >
+        Utilisateurs
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--brand)',
+          lineHeight: 1.3,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+      >
+        {total !== null ? total.toLocaleString('fr-FR') : 'n/a'}
+        {partial && (
+          <span style={{ color: 'var(--warn)', fontSize: 11 }} title="Calcul partiel">
+            ⚠
+          </span>
+        )}
+      </div>
+      {sortedBreakdown.length > 0 && (
+        <div
+          style={{
+            marginTop: 3,
+            fontSize: 10,
+            color: 'var(--text3)',
+            fontFamily: 'var(--mono)',
+          }}
+        >
+          {sortedBreakdown
+            .map(([method, count]) => `${method} ${count.toLocaleString('fr-FR')}`)
+            .join(' · ')}
+        </div>
+      )}
     </div>
   )
 }

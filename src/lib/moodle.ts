@@ -153,30 +153,107 @@ export async function getSiteInfo(baseUrl: string, token: string): Promise<Moodl
   return moodleCall<MoodleSiteInfo>(baseUrl, token, 'core_webservice_get_site_info')
 }
 
+export type UsersCountResult = {
+  /** Total cumulé sur toutes les méthodes ayant répondu. */
+  total: number
+  /** Détail par méthode d'auth, uniquement les méthodes ayant répondu avec >=1 user. */
+  breakdown: Record<string, number>
+  /** True si au moins une méthode a échoué (le total est donc une borne basse). */
+  partial: boolean
+  /** Messages d'erreur des méthodes qui ont échoué (utile pour debug admin). */
+  errors: string[]
+}
+
+/** Méthodes d'auth Moodle à interroger. Surchargeable via MOODLE_AUTH_METHODS=man,oidc,ldap. */
+const DEFAULT_AUTH_METHODS = ['manual', 'oidc']
+
+function getAuthMethods(): string[] {
+  const env = process.env.MOODLE_AUTH_METHODS
+  if (!env) return DEFAULT_AUTH_METHODS
+  const parsed = env
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  return parsed.length > 0 ? parsed : DEFAULT_AUTH_METHODS
+}
+
 /**
- * Tente d'estimer le nombre d'utilisateurs de la plateforme via core_user_get_users.
- * Le critère lastname='' fait un LIKE '%%' qui matche tous les comptes côté Moodle.
- * Nécessite la capability moodle/user:viewalldetails sur le rôle du token Web Services.
- * Retourne `null` si la fonction n'est pas accessible (token sans droit, plugin absent, etc.).
+ * Compte les utilisateurs de la plateforme via core_user_get_users en SOMMANT
+ * les requêtes par méthode d'auth (manual, oidc, etc.).
+ *
+ * Pourquoi cette stratégie : la doc Moodle accepte les keys
+ * `id, firstname, lastname, idnumber, username, email, auth, confirmed`
+ * Filtrer par `auth=manual` puis `auth=oidc` (les 2 méthodes UN-CHK) est
+ * plus fiable que de faire un wildcard `lastname=''` (comportement non documenté).
+ *
+ * Robustesse : Promise.allSettled pour qu'un échec partiel ne fasse pas tout perdre.
+ * Pagination Moodle : on passe `limitnum: 0` (= illimité côté serveur).
+ *
+ * Retourne :
+ *   - `null` si TOUTES les méthodes ont échoué (capability absente, plugin manquant)
+ *   - sinon { total, breakdown, partial, errors }
+ *
+ * Capability requise : `moodle/user:viewdetails` ou équivalent sur le rôle du token.
  */
 export async function getUsersTotalCount(
   baseUrl: string,
   token: string,
-): Promise<number | null> {
-  try {
-    const res = await moodleCall<{ users?: Array<{ id: number }>; warnings?: unknown[] }>(
-      baseUrl,
-      token,
-      'core_user_get_users',
-      {
-        'criteria[0][key]': 'lastname',
-        'criteria[0][value]': '',
-      },
+): Promise<UsersCountResult | null> {
+  const methods = getAuthMethods()
+
+  const results = await Promise.allSettled(
+    methods.map(method =>
+      moodleCall<{ users?: Array<{ id: number }>; warnings?: unknown[] }>(
+        baseUrl,
+        token,
+        'core_user_get_users',
+        {
+          'criteria[0][key]': 'auth',
+          'criteria[0][value]': method,
+          // 0 = pas de limite côté serveur Moodle (sinon défaut souvent à 100)
+          limitnum: 0,
+          limitfrom: 0,
+        },
+      ),
+    ),
+  )
+
+  const breakdown: Record<string, number> = {}
+  const errors: string[] = []
+  let total = 0
+
+  for (let i = 0; i < methods.length; i++) {
+    const method = methods[i]
+    const r = results[i]
+    if (r.status === 'fulfilled' && Array.isArray(r.value?.users)) {
+      const count = r.value.users.length
+      if (count > 0) {
+        breakdown[method] = count
+        total += count
+      }
+    } else if (r.status === 'rejected') {
+      const msg = (r.reason as Error)?.message ?? 'erreur inconnue'
+      errors.push(`${method}: ${msg.slice(0, 100)}`)
+    }
+  }
+
+  // Si aucune méthode n'a même retourné un succès vide → on ne sait rien.
+  // Si au moins une a fulfilled (même avec 0 résultat), c'est qu'on peut
+  // interroger Moodle, donc 0 est une vraie réponse.
+  const anyFulfilled = results.some(r => r.status === 'fulfilled')
+  if (!anyFulfilled) {
+    logger.warn(
+      { baseUrl, errors, methods },
+      'getUsersTotalCount : toutes les méthodes ont échoué',
     )
-    if (!res || !Array.isArray(res.users)) return null
-    return res.users.length
-  } catch {
     return null
+  }
+
+  return {
+    total,
+    breakdown,
+    partial: errors.length > 0,
+    errors,
   }
 }
 

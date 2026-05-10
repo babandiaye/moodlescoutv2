@@ -12,6 +12,7 @@ type Props = {
 const NAV_TABS: Array<{ href: string; label: string; matchPrefix: string; adminOnly?: boolean }> = [
   { href: '/', label: 'Accueil', matchPrefix: '/' },
   { href: '/configuration', label: 'Configuration', matchPrefix: '/configuration', adminOnly: true },
+  { href: '/users', label: 'Utilisateurs', matchPrefix: '/users', adminOnly: true },
   { href: '/audits/new', label: 'Lancer un audit', matchPrefix: '/audits/new' },
   { href: '/audits', label: 'Audits', matchPrefix: '/audits' },
 ]

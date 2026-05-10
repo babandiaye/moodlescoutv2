@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { withLlmSlot } from './llm-semaphore'
 
 export const AUDIT_PROMPT = `Tu es expert en ingénierie pédagogique et en OCR. Analyse ce cours Moodle (UN-CHK, Sénégal).
 {img_note}
@@ -202,26 +203,37 @@ export type LlmRunOpts = {
 }
 
 export async function runLlm(opts: LlmRunOpts): Promise<AuditAiResult> {
+  // Sémaphore : protège un Ollama mono-GPU contre les inférences concurrentes
+  // qui satureraient la VRAM. Pour Anthropic (API cloud), on peut monter plus haut.
+  const max = Number(
+    process.env.LLM_MAX_CONCURRENT ?? (opts.provider === 'anthropic' ? 5 : 1),
+  )
+  const label = `${opts.provider}:${opts.model}`
+
   try {
-    let raw: string
-    if (opts.provider === 'anthropic') {
-      if (!opts.apiKey) throw new Error('Clé Anthropic manquante')
-      raw = await callAnthropic({
-        apiKey: opts.apiKey,
-        model: opts.model,
-        content: opts.content,
-        images: opts.images,
-      })
-    } else {
-      if (!opts.apiUrl) throw new Error('URL Ollama manquante')
-      raw = await callOllama({
-        apiUrl: opts.apiUrl,
-        apiKey: opts.apiKey ?? undefined,
-        model: opts.model,
-        content: opts.content,
-        images: opts.images,
-      })
-    }
+    const raw = await withLlmSlot(
+      max,
+      async () => {
+        if (opts.provider === 'anthropic') {
+          if (!opts.apiKey) throw new Error('Clé Anthropic manquante')
+          return callAnthropic({
+            apiKey: opts.apiKey,
+            model: opts.model,
+            content: opts.content,
+            images: opts.images,
+          })
+        }
+        if (!opts.apiUrl) throw new Error('URL Ollama manquante')
+        return callOllama({
+          apiUrl: opts.apiUrl,
+          apiKey: opts.apiKey ?? undefined,
+          model: opts.model,
+          content: opts.content,
+          images: opts.images,
+        })
+      },
+      { label, timeoutMs: 600_000 },
+    )
     return parseAiResponse(raw)
   } catch (err) {
     const msg = (err as Error).message

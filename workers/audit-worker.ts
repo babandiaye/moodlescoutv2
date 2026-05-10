@@ -10,9 +10,14 @@ import { decrypt } from '../src/lib/crypto'
 import { logger } from '../src/lib/logger'
 import { auditCourse, listCoursesForAudit } from '../src/lib/audit'
 import { QUEUE_AUDIT, SSE_CHANNEL, type AuditJobData, type SseEvent } from '../src/lib/queue'
+import { pLimit } from '../src/lib/concurrency'
 
 const REDIS_URL = process.env.REDIS_URL
 const CONCURRENCY = Math.max(1, Number(process.env.BULLMQ_CONCURRENCY ?? 3))
+// Concurrence INTRA-job : nb de cours traités en parallèle dans un même audit.
+// Le LLM est gated séparément par le sémaphore Redis (LLM_MAX_CONCURRENT) ;
+// ce paramètre régule surtout la pression sur la plateforme Moodle cible.
+const INTRA_JOB_CONCURRENCY = Math.max(1, Number(process.env.AUDIT_INTRA_JOB_CONCURRENCY ?? 5))
 
 if (!REDIS_URL) {
   logger.error('REDIS_URL absent — worker ne peut démarrer')
@@ -71,120 +76,154 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
     total: courses.length,
   })
 
-  let done = 0
-  let failed = 0
+  // Drapeau partagé entre tous les cours en parallèle. Quand l'annulation est
+  // détectée par UN cours, les autres courent leur check au début de leur tour
+  // et sortent rapidement.
   let cancelled = false
+  const limit = pLimit(INTRA_JOB_CONCURRENCY)
 
-  for (const course of courses) {
-    // Vérifie l'annulation avant chaque cours (poll status en DB).
-    const current = await prisma.auditSession.findUnique({
-      where: { id: sessionId },
-      select: { status: true },
-    })
-    if (current?.status === 'cancelled') {
-      cancelled = true
-      logger.info({ sessionId, done, failed, total: courses.length }, 'Worker: audit annulé')
-      break
-    }
+  logger.info(
+    { sessionId, total: courses.length, intraConcurrency: INTRA_JOB_CONCURRENCY },
+    'Worker: démarrage parallèle des cours',
+  )
 
-    const courseStart = Date.now()
-    await publish(sessionId, {
-      type: 'progress',
-      done,
-      failed,
-      total: courses.length,
-      current: course.shortname ?? String(course.id),
-    })
+  const tasks = courses.map(course =>
+    limit(async () => {
+      if (cancelled) return // Court-circuit : un autre cours a déjà détecté l'annulation
 
-    try {
-      const result = await auditCourse(
-        {
-          course,
-          baseUrl,
-          token,
-          platformName: session.platform.name,
-          platformVersion: session.platform.version,
-        },
-        {
-          provider: session.llmConfig.provider as 'ollama' | 'anthropic',
-          apiUrl: session.llmConfig.apiUrl,
-          apiKey,
-          model: session.llmConfig.model,
-        },
-        { extractImages: session.extractImages, quizDetail: session.quizDetail },
-        tree,
-      )
-
-      const score = Number(result.score_global ?? 0)
-      const duration = Date.now() - courseStart
-
-      await prisma.courseAudit.upsert({
-        where: { sessionId_courseId: { sessionId, courseId: course.id } },
-        create: {
-          sessionId,
-          courseId: course.id,
-          shortname: course.shortname ?? '',
-          fullname: course.fullname ?? '',
-          resultJson: result,
-          scoreGlobal: score,
-          durationMs: duration,
-        },
-        update: {
-          shortname: course.shortname ?? '',
-          fullname: course.fullname ?? '',
-          resultJson: result,
-          scoreGlobal: score,
-          durationMs: duration,
-          errorMessage: null,
-        },
-      })
-
-      done += 1
-      await prisma.auditSession.update({
+      // Check status + compteurs courants en 1 seule query (annulation propagée
+      // par /api/audits/[id]/cancel + valeurs réelles à publier dans `progress`).
+      const current = await prisma.auditSession.findUnique({
         where: { id: sessionId },
-        data: { doneCourses: done },
+        select: {
+          status: true,
+          doneCourses: true,
+          failedCourses: true,
+          totalCourses: true,
+        },
       })
+      if (current?.status === 'cancelled') {
+        cancelled = true
+        return
+      }
+
+      const courseStart = Date.now()
       await publish(sessionId, {
-        type: 'course',
-        courseId: course.id,
-        shortname: course.shortname ?? '',
-        score,
+        type: 'progress',
+        done: current?.doneCourses ?? 0,
+        failed: current?.failedCourses ?? 0,
+        total: current?.totalCourses ?? courses.length,
+        current: course.shortname ?? String(course.id),
       })
-    } catch (err) {
-      failed += 1
-      const message = (err as Error).message
-      logger.warn(
-        { sessionId, courseId: course.id, err: message },
-        'Audit cours en échec',
-      )
-      await prisma.courseAudit.upsert({
-        where: { sessionId_courseId: { sessionId, courseId: course.id } },
-        create: {
-          sessionId,
+
+      try {
+        const result = await auditCourse(
+          {
+            course,
+            baseUrl,
+            token,
+            platformName: session.platform.name,
+            platformVersion: session.platform.version,
+          },
+          {
+            provider: session.llmConfig.provider as 'ollama' | 'anthropic',
+            apiUrl: session.llmConfig.apiUrl,
+            apiKey,
+            model: session.llmConfig.model,
+          },
+          { extractImages: session.extractImages, quizDetail: session.quizDetail },
+          tree,
+        )
+
+        const score = Number(result.score_global ?? 0)
+        const duration = Date.now() - courseStart
+
+        await prisma.courseAudit.upsert({
+          where: { sessionId_courseId: { sessionId, courseId: course.id } },
+          create: {
+            sessionId,
+            courseId: course.id,
+            shortname: course.shortname ?? '',
+            fullname: course.fullname ?? '',
+            resultJson: result,
+            scoreGlobal: score,
+            durationMs: duration,
+          },
+          update: {
+            shortname: course.shortname ?? '',
+            fullname: course.fullname ?? '',
+            resultJson: result,
+            scoreGlobal: score,
+            durationMs: duration,
+            errorMessage: null,
+          },
+        })
+
+        // Increment ATOMIQUE côté Postgres : pas de race entre tâches parallèles.
+        // On lit la valeur après increment pour publier l'event SSE avec la valeur réelle.
+        const updated = await prisma.auditSession.update({
+          where: { id: sessionId },
+          data: { doneCourses: { increment: 1 } },
+          select: { doneCourses: true, failedCourses: true, totalCourses: true },
+        })
+        await publish(sessionId, {
+          type: 'course',
           courseId: course.id,
           shortname: course.shortname ?? '',
-          fullname: course.fullname ?? '',
-          resultJson: { error: message.slice(0, 500) },
-          errorMessage: message.slice(0, 500),
-          durationMs: Date.now() - courseStart,
-        },
-        update: {
-          errorMessage: message.slice(0, 500),
-          durationMs: Date.now() - courseStart,
-        },
-      })
-      await prisma.auditSession.update({
-        where: { id: sessionId },
-        data: { failedCourses: failed },
-      })
-    }
-    await publish(sessionId, {
-      type: 'progress',
-      done,
-      failed,
-      total: courses.length,
-    })
-  }
+          score,
+        })
+        await publish(sessionId, {
+          type: 'progress',
+          done: updated.doneCourses,
+          failed: updated.failedCourses,
+          total: updated.totalCourses,
+        })
+      } catch (err) {
+        const message = (err as Error).message
+        logger.warn(
+          { sessionId, courseId: course.id, err: message },
+          'Audit cours en échec',
+        )
+        await prisma.courseAudit.upsert({
+          where: { sessionId_courseId: { sessionId, courseId: course.id } },
+          create: {
+            sessionId,
+            courseId: course.id,
+            shortname: course.shortname ?? '',
+            fullname: course.fullname ?? '',
+            resultJson: { error: message.slice(0, 500) },
+            errorMessage: message.slice(0, 500),
+            durationMs: Date.now() - courseStart,
+          },
+          update: {
+            errorMessage: message.slice(0, 500),
+            durationMs: Date.now() - courseStart,
+          },
+        })
+        const updated = await prisma.auditSession.update({
+          where: { id: sessionId },
+          data: { failedCourses: { increment: 1 } },
+          select: { doneCourses: true, failedCourses: true, totalCourses: true },
+        })
+        await publish(sessionId, {
+          type: 'progress',
+          done: updated.doneCourses,
+          failed: updated.failedCourses,
+          total: updated.totalCourses,
+        })
+      }
+    }),
+  )
+
+  await Promise.all(tasks)
+
+  // Lecture finale des compteurs en BD (source de vérité)
+  const finalCounters = await prisma.auditSession.findUnique({
+    where: { id: sessionId },
+    select: { doneCourses: true, failedCourses: true },
+  })
+  const done = finalCounters?.doneCourses ?? 0
+  const failed = finalCounters?.failedCourses ?? 0
 
   const finalStatus = cancelled
     ? 'cancelled'
