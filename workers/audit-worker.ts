@@ -3,7 +3,7 @@ import { config as dotenvConfig } from 'dotenv'
 import path from 'node:path'
 dotenvConfig({ path: path.resolve(process.cwd(), '.env.local'), override: false })
 
-import { Worker, Job } from 'bullmq'
+import { Queue, Worker, Job } from 'bullmq'
 import IORedis from 'ioredis'
 import { prisma } from '../src/lib/prisma'
 import { decrypt } from '../src/lib/crypto'
@@ -111,7 +111,7 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
           apiKey,
           model: session.llmConfig.model,
         },
-        { extractImages: session.extractImages, quizDetail: session.quizDetail as any },
+        { extractImages: session.extractImages, quizDetail: session.quizDetail },
         tree,
       )
 
@@ -209,41 +209,118 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
   )
 }
 
-const worker = new Worker<AuditJobData>(QUEUE_AUDIT, processAudit, {
-  connection: { url: REDIS_URL, maxRetriesPerRequest: null } as any,
-  concurrency: CONCURRENCY,
-})
+/**
+ * Nettoie les sessions orphelines au boot du worker.
+ *
+ * Cas d'usage : si le worker a été tué brutalement (OOM, deploy, panic) en plein
+ * audit, la session reste en `running` ou `pending` en BD pour l'éternité car
+ * BullMQ marque le job échoué mais l'event `failed` n'a pas eu le temps de
+ * mettre à jour la BD.
+ *
+ * Stratégie : prendre toutes les sessions en `running`/`pending` et exclure
+ * celles qui ont un job vivant en BullMQ (active, waiting, delayed). Le reste
+ * est marqué `failed` avec `finishedAt = now()`.
+ */
+async function cleanupZombieSessions(): Promise<void> {
+  const orphaned = await prisma.auditSession.findMany({
+    where: { status: { in: ['running', 'pending'] } },
+    select: { id: true, sessionKey: true, status: true, startedAt: true },
+  })
+  if (orphaned.length === 0) return
 
-worker.on('completed', job => {
-  logger.info({ jobId: job.id }, 'Job terminé')
-})
-worker.on('failed', async (job, err) => {
-  logger.error({ jobId: job?.id, err: err.message }, 'Job en échec')
-  if (job?.data?.sessionId) {
-    try {
-      await prisma.auditSession.update({
-        where: { id: job.data.sessionId },
-        data: { status: 'failed', finishedAt: new Date() },
-      })
-      await publish(job.data.sessionId, {
-        type: 'error',
-        message: err.message.slice(0, 200),
-      })
-      await publish(job.data.sessionId, { type: 'status', status: 'failed' })
-    } catch {
-      // ignore
-    }
+  let activeSessionIds = new Set<string>()
+  const inspectQueue = new Queue(QUEUE_AUDIT, {
+    connection: { url: REDIS_URL!, maxRetriesPerRequest: null } as any,
+  })
+  try {
+    const jobs = await inspectQueue.getJobs(['active', 'waiting', 'delayed', 'paused'])
+    activeSessionIds = new Set(
+      jobs.map(j => j.data?.sessionId).filter((s): s is string => typeof s === 'string'),
+    )
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error).message },
+      'Cleanup zombies : impossible de lister les jobs BullMQ, skip',
+    )
+    await inspectQueue.close()
+    return
   }
-})
+  await inspectQueue.close()
 
-const shutdown = async (signal: string) => {
-  logger.info({ signal }, 'Worker: arrêt en cours')
-  await worker.close()
-  await publisher.quit()
-  await prisma.$disconnect()
-  process.exit(0)
+  const zombies = orphaned.filter(s => !activeSessionIds.has(s.id))
+  if (zombies.length === 0) {
+    logger.info(
+      { running: orphaned.length, active: activeSessionIds.size },
+      'Cleanup zombies : aucune session orpheline (toutes ont un job actif)',
+    )
+    return
+  }
+
+  await prisma.auditSession.updateMany({
+    where: { id: { in: zombies.map(z => z.id) } },
+    data: { status: 'failed', finishedAt: new Date() },
+  })
+
+  logger.warn(
+    {
+      zombieCount: zombies.length,
+      sessionKeys: zombies.map(z => z.sessionKey),
+    },
+    'Cleanup zombies : sessions orphelines marquées failed',
+  )
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT', () => shutdown('SIGINT'))
 
-logger.info({ concurrency: CONCURRENCY, queue: QUEUE_AUDIT }, 'Worker: prêt')
+async function bootstrap() {
+  // 1) Nettoyer les sessions zombies AVANT que le worker commence à tirer des jobs.
+  await cleanupZombieSessions().catch(err => {
+    logger.error(
+      { err: (err as Error).message },
+      'Cleanup zombies : erreur fatale, skip',
+    )
+  })
+
+  // 2) Démarrer le worker BullMQ.
+  const worker = new Worker<AuditJobData>(QUEUE_AUDIT, processAudit, {
+    connection: { url: REDIS_URL, maxRetriesPerRequest: null } as any,
+    concurrency: CONCURRENCY,
+  })
+
+  worker.on('completed', job => {
+    logger.info({ jobId: job.id }, 'Job terminé')
+  })
+  worker.on('failed', async (job, err) => {
+    logger.error({ jobId: job?.id, err: err.message }, 'Job en échec')
+    if (job?.data?.sessionId) {
+      try {
+        await prisma.auditSession.update({
+          where: { id: job.data.sessionId },
+          data: { status: 'failed', finishedAt: new Date() },
+        })
+        await publish(job.data.sessionId, {
+          type: 'error',
+          message: err.message.slice(0, 200),
+        })
+        await publish(job.data.sessionId, { type: 'status', status: 'failed' })
+      } catch {
+        // ignore
+      }
+    }
+  })
+
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, 'Worker: arrêt en cours')
+    await worker.close()
+    await publisher.quit()
+    await prisma.$disconnect()
+    process.exit(0)
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+
+  logger.info({ concurrency: CONCURRENCY, queue: QUEUE_AUDIT }, 'Worker: prêt')
+}
+
+bootstrap().catch(err => {
+  logger.error({ err: (err as Error).message }, 'Bootstrap worker : erreur fatale')
+  process.exit(1)
+})

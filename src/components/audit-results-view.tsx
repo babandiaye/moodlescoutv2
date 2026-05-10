@@ -302,7 +302,25 @@ function CourseRow({
             {r.shortname}
           </code>
         </td>
-        <td style={{ maxWidth: 220, fontWeight: 500 }}>{r.fullname}</td>
+        <td style={{ maxWidth: 220, fontWeight: 500 }}>
+          {r.fullname}
+          {r.data_incomplete && (
+            <span
+              className="badge badge-warn"
+              style={{ marginLeft: 6, fontSize: 10, padding: '1px 6px' }}
+              title={
+                Array.isArray(r.data_incomplete_calls) && r.data_incomplete_calls.length > 0
+                  ? `Données partielles — ${r.data_incomplete_calls.length} appel(s) Moodle en échec après retry :\n` +
+                    (r.data_incomplete_calls as Array<{ wsfunction: string; error: string }>)
+                      .map(c => `• ${c.wsfunction}: ${c.error}`)
+                      .join('\n')
+                  : 'Données partielles'
+              }
+            >
+              ⚠ partiel
+            </span>
+          )}
+        </td>
         <td style={{ fontSize: 11, color: 'var(--text2)' }}>
           {Array.isArray(r.category_path) && r.category_path.length > 0
             ? r.category_path.join(' › ')

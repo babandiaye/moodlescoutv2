@@ -1,14 +1,31 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 type Platform = { id: string; name: string; url: string; version: string }
 type LlmConfig = { id: string; name: string; provider: string; model: string; isDefault: boolean }
 
+type QuotaInfo = {
+  perUser: { used: number; limit: number; remaining: number; retryAfterSec: number; windowSec: number }
+  global: { used: number; limit: number; remaining: number; retryAfterSec: number; windowSec: number }
+  blocked: boolean
+  blockedKind: 'user' | 'global' | null
+  retryAfterSec: number
+  nearLimit: boolean
+  nearLimitKind: 'user' | 'global' | null
+}
+
 type Props = {
   platforms: Platform[]
   llmConfigs: LlmConfig[]
+}
+
+function formatMmSs(sec: number): string {
+  if (sec <= 0) return '00:00'
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
 export function NewAuditForm({ platforms, llmConfigs }: Props) {
@@ -23,6 +40,46 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Quota rate limit (lecture seule pour avertir avant le clic)
+  const [quota, setQuota] = useState<QuotaInfo | null>(null)
+  const [countdown, setCountdown] = useState(0)
+
+  // Charge le quota au mount et le rafraîchit après chaque tentative
+  const loadQuota = async () => {
+    try {
+      const res = await fetch('/api/audits/quota')
+      if (!res.ok) return
+      const data: QuotaInfo = await res.json()
+      setQuota(data)
+      setCountdown(data.retryAfterSec)
+    } catch {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    loadQuota()
+  }, [])
+
+  // Compteur live qui décrémente chaque seconde quand on est bloqué
+  useEffect(() => {
+    if (countdown <= 0) return
+    const interval = setInterval(() => {
+      setCountdown(c => {
+        const next = c - 1
+        if (next <= 0) {
+          // Quota libéré : rafraîchit l'état complet
+          loadQuota()
+          return 0
+        }
+        return next
+      })
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [countdown])
+
+  const isBlocked = quota?.blocked || countdown > 0
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -45,7 +102,13 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      if (!res.ok) {
+        // Si rate limit, rafraîchit le quota pour mettre à jour le compteur live
+        if (res.status === 429) {
+          await loadQuota()
+        }
+        throw new Error(data.error ?? `HTTP ${res.status}`)
+      }
       router.push(`/audits/${data.session.id}`)
     } catch (err) {
       setError((err as Error).message)
@@ -176,20 +239,72 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
 
         {error && <div className="error-banner">{error}</div>}
 
+        {quota && quota.blocked && (
+          <div
+            className="error-banner"
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+          >
+            <span>
+              ⛔{' '}
+              {quota.blockedKind === 'user'
+                ? `Vous avez atteint votre quota personnel (${quota.perUser.limit} audits / ${Math.round(
+                    quota.perUser.windowSec / 60,
+                  )} min).`
+                : `Le quota global de la plateforme est saturé (${quota.global.limit} audits / ${Math.round(
+                    quota.global.windowSec / 60,
+                  )} min). D'autres auditeurs sont en cours.`}
+            </span>
+            <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>
+              Disponible dans {formatMmSs(countdown)}
+            </span>
+          </div>
+        )}
+
+        {quota && !quota.blocked && quota.nearLimit && (
+          <div
+            style={{
+              padding: '10px 14px',
+              background: 'var(--warn-light)',
+              border: '1px solid #F9E79F',
+              color: 'var(--warn)',
+              borderRadius: 'var(--radius)',
+              fontSize: 12,
+            }}
+          >
+            ⚠{' '}
+            {quota.nearLimitKind === 'user'
+              ? `Quota personnel : ${quota.perUser.used}/${quota.perUser.limit} audits utilisés sur la fenêtre de ${Math.round(
+                  quota.perUser.windowSec / 60,
+                )} min.`
+              : `Quota global : ${quota.global.used}/${quota.global.limit} audits utilisés. La file est chargée par d'autres auditeurs.`}
+          </div>
+        )}
+
         <div className="card">
           <div
             className="card-body"
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
           >
             <div style={{ fontSize: 13, color: 'var(--text2)' }}>
-              Lancement asynchrone via la file d&apos;attente. Vous serez redirigé vers la page de suivi.
+              {isBlocked ? (
+                <span>
+                  Quota atteint — réessayez dans{' '}
+                  <strong style={{ fontFamily: 'var(--mono)' }}>{formatMmSs(countdown)}</strong>.
+                </span>
+              ) : (
+                <>Lancement asynchrone via la file d&apos;attente. Vous serez redirigé vers la page de suivi.</>
+              )}
             </div>
             <button
               type="submit"
               className="btn-launch"
-              disabled={submitting || !form.platformId || !form.llmConfigId}
+              disabled={submitting || isBlocked || !form.platformId || !form.llmConfigId}
             >
-              {submitting ? 'Création…' : '▶ Lancer l\'audit'}
+              {submitting
+                ? 'Création…'
+                : isBlocked
+                  ? `⏳ ${formatMmSs(countdown)}`
+                  : "▶ Lancer l'audit"}
             </button>
           </div>
         </div>

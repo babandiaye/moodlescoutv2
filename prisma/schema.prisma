@@ -29,6 +29,12 @@ enum LlmProvider {
   anthropic
 }
 
+enum QuizDetail {
+  meta
+  detail
+  both
+}
+
 // ─── Utilisateurs (synchronisés depuis Keycloak) ──────────────
 
 model User {
@@ -116,7 +122,7 @@ model AuditSession {
   failedCourses  Int         @default(0) @map("failed_courses")
 
   extractImages  Boolean     @default(true) @map("extract_images")
-  quizDetail     String      @default("both") @map("quiz_detail")
+  quizDetail     QuizDetail  @default(both) @map("quiz_detail")
   // Filtre éventuel par catégories Moodle (array de strings)
   categoriesJson Json?       @map("categories_json")
 

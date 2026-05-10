@@ -9,6 +9,21 @@ export const dynamic = 'force-dynamic'
 
 type Ctx = { params: Promise<{ id: string }> }
 
+/** Format YYYYMMDDTHHMMSS en heure locale du serveur. */
+function formatTimestamp(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `T${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  )
+}
+
+/** Slug : retire tout sauf [A-Za-z0-9]. "P10 SEJAC3 (SEG, AES)" -> "P10SEJAC3SEGAES". */
+function slugifyName(name: string): string {
+  const slug = name.replace(/[^A-Za-z0-9]/g, '')
+  return slug || 'audit'
+}
+
 export async function GET(req: NextRequest, ctx: Ctx) {
   const a = await requireAuth()
   if (!a.ok) return a.response
@@ -25,6 +40,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     select: {
       userId: true,
       sessionKey: true,
+      platform: { select: { name: true } },
       courseAudits: {
         where: { errorMessage: null },
         orderBy: { createdAt: 'asc' },
@@ -45,7 +61,11 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     return new Response('Aucun résultat à exporter', { status: 404 })
   }
 
-  const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)
+  const slug = slugifyName(session.platform.name)
+  const ts = formatTimestamp(new Date())
+  const ext = format === 'excel' ? 'xlsx' : 'pdf'
+  const filename = `${slug}-${ts}.${ext}`
+
   try {
     if (format === 'excel') {
       const buf = await exportToExcel(courses)
@@ -53,7 +73,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         headers: {
           'Content-Type':
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'Content-Disposition': `attachment; filename="moodlescout_${ts}.xlsx"`,
+          'Content-Disposition': `attachment; filename="${filename}"`,
           'Content-Length': String(buf.length),
         },
       })
@@ -62,7 +82,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     return new Response(buf as any, {
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="moodlescout_${ts}.pdf"`,
+        'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': String(buf.length),
       },
     })

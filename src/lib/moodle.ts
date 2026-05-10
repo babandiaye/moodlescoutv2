@@ -1,5 +1,71 @@
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
 import * as cheerio from 'cheerio'
+import { createHash } from 'node:crypto'
+import { redis } from './redis'
+import { logger } from './logger'
+
+const MOODLE_RETRY_ATTEMPTS = 2 // 1 essai initial + 1 retry
+const MOODLE_RETRY_DELAY_MS = 2000
+
+// ─── Cache Moodle WS ──────────────────────────────────────────
+// Mutualise les appels WS lourds entre audits parallèles sur la même plateforme.
+// Clés Redis : `moodle:ws:<wsfunction>:<baseUrl>:<tokenHash>`
+// Le token n'est jamais stocké en clair : on en hashe les 16 premiers chars.
+
+const CACHE_PREFIX = 'moodle:ws'
+
+function hashToken(token: string): string {
+  return createHash('sha1').update(token).digest('hex').slice(0, 16)
+}
+
+function cacheKey(wsfunction: string, baseUrl: string, token: string): string {
+  return `${CACHE_PREFIX}:${wsfunction}:${baseUrl.replace(/\/+$/, '')}:${hashToken(token)}`
+}
+
+async function readCached<T>(key: string): Promise<T | null> {
+  if (!redis) return null
+  try {
+    const raw = await redis.get(key)
+    if (!raw) return null
+    return JSON.parse(raw) as T
+  } catch (err) {
+    logger.warn({ key, err: (err as Error).message }, 'Cache Moodle WS : lecture échouée')
+    return null
+  }
+}
+
+async function writeCached<T>(key: string, value: T, ttlSec: number): Promise<void> {
+  if (!redis) return
+  try {
+    await redis.set(key, JSON.stringify(value), 'EX', ttlSec)
+  } catch (err) {
+    logger.warn({ key, err: (err as Error).message }, 'Cache Moodle WS : écriture échouée')
+  }
+}
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'EAI_AGAIN',
+])
+
+/**
+ * Détecte les erreurs transitoires sur lesquelles un retry vaut la peine :
+ *   - timeouts réseau / ECONNRESET
+ *   - 5xx HTTP (Moodle saturé, base bloquée, etc.)
+ * Les erreurs métier Moodle (exception payload `{exception, errorcode}`) ou les 4xx
+ * (bad request, auth) ne sont PAS transitoires : on échoue immédiatement.
+ */
+function isTransientError(err: unknown): boolean {
+  if (err instanceof AxiosError) {
+    if (err.code && TRANSIENT_NETWORK_CODES.has(err.code)) return true
+    const status = err.response?.status
+    if (typeof status === 'number' && status >= 500 && status < 600) return true
+  }
+  return false
+}
 
 export async function moodleCall<T = any>(
   baseUrl: string,
@@ -23,30 +89,52 @@ export async function moodleCall<T = any>(
     }
   }
 
-  const response = await axios.post(url, formData.toString(), {
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    timeout: 30000,
-  })
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= MOODLE_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const response = await axios.post(url, formData.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 30000,
+      })
 
-  const data = response.data
-  if (data && typeof data === 'object' && 'exception' in data) {
-    throw new Error(
-      `Moodle ${wsfunction}: ${data.errorcode ?? 'unknown'} — ${data.message ?? 'erreur inconnue'}`,
-    )
+      const data = response.data
+      if (data && typeof data === 'object' && 'exception' in data) {
+        // Erreur métier Moodle, ne pas retry
+        throw new Error(
+          `Moodle ${wsfunction}: ${data.errorcode ?? 'unknown'} — ${data.message ?? 'erreur inconnue'}`,
+        )
+      }
+      return data as T
+    } catch (err) {
+      lastErr = err
+      const transient = isTransientError(err)
+      if (!transient || attempt >= MOODLE_RETRY_ATTEMPTS) {
+        throw err
+      }
+      // Retry après backoff
+      await new Promise(resolve => setTimeout(resolve, MOODLE_RETRY_DELAY_MS))
+    }
   }
-  return data as T
+  throw lastErr as Error
 }
 
+/**
+ * Variante qui ne lève jamais. Si le call échoue (après retry), retourne `fallback`.
+ * Le callback optionnel `onError` est appelé avec l'erreur — utile pour signaler à
+ * l'audit appelant qu'un cours a été audité avec des données partielles.
+ */
 export async function safeMoodleCall<T>(
   baseUrl: string,
   token: string,
   wsfunction: string,
   params: Record<string, string | number | string[] | number[]> = {},
   fallback: T,
+  onError?: (err: Error, wsfunction: string) => void,
 ): Promise<T> {
   try {
     return await moodleCall<T>(baseUrl, token, wsfunction, params)
-  } catch {
+  } catch (err) {
+    if (onError) onError(err as Error, wsfunction)
     return fallback
   }
 }
@@ -108,9 +196,24 @@ export type MoodleCourse = {
   overviewfiles?: Array<{ fileurl?: string; mimetype?: string }>
 }
 
-export async function getCourses(baseUrl: string, token: string): Promise<MoodleCourse[]> {
+// TTL court : la liste de cours bouge plus souvent que les catégories.
+// 5 min suffit à mutualiser des audits parallèles lancés en rafale.
+const GET_COURSES_TTL_SEC = 300
+
+export async function getCourses(
+  baseUrl: string,
+  token: string,
+  opts?: { bypassCache?: boolean },
+): Promise<MoodleCourse[]> {
+  const key = cacheKey('core_course_get_courses', baseUrl, token)
+  if (!opts?.bypassCache) {
+    const cached = await readCached<MoodleCourse[]>(key)
+    if (cached) return cached
+  }
   const data = await moodleCall<MoodleCourse[]>(baseUrl, token, 'core_course_get_courses')
-  return Array.isArray(data) ? data.filter(c => (c.id ?? 0) > 1) : []
+  const courses = Array.isArray(data) ? data.filter(c => (c.id ?? 0) > 1) : []
+  await writeCached(key, courses, GET_COURSES_TTL_SEC)
+  return courses
 }
 
 export async function getCoursesByField(
@@ -141,7 +244,21 @@ export type MoodleCategory = {
 
 export type CategoriesTree = Record<number, MoodleCategory>
 
-export async function getCategoriesTree(baseUrl: string, token: string): Promise<CategoriesTree> {
+// TTL long : les catégories Moodle bougent rarement (création/refonte annuelle).
+// 30 min mutualise sans risquer une donnée obsolète.
+const GET_CATEGORIES_TREE_TTL_SEC = 1800
+
+export async function getCategoriesTree(
+  baseUrl: string,
+  token: string,
+  opts?: { bypassCache?: boolean },
+): Promise<CategoriesTree> {
+  const key = cacheKey('core_course_get_categories', baseUrl, token)
+  if (!opts?.bypassCache) {
+    const cached = await readCached<CategoriesTree>(key)
+    if (cached) return cached
+  }
+
   const cats = await safeMoodleCall<any[]>(
     baseUrl,
     token,
@@ -169,6 +286,7 @@ export async function getCategoriesTree(baseUrl: string, token: string): Promise
     const cat = tree[Number(cid)]
     if (cat.parent && tree[cat.parent]) tree[cat.parent].children.push(cat.id)
   }
+  await writeCached(key, tree, GET_CATEGORIES_TREE_TTL_SEC)
   return tree
 }
 
@@ -210,10 +328,13 @@ export type MoodleModule = {
   }>
 }
 
+export type OnMoodleError = (err: Error, wsfunction: string) => void
+
 export async function getCourseContents(
   baseUrl: string,
   token: string,
   courseId: number,
+  onError?: OnMoodleError,
 ): Promise<MoodleSection[]> {
   return safeMoodleCall<MoodleSection[]>(
     baseUrl,
@@ -221,6 +342,7 @@ export async function getCourseContents(
     'core_course_get_contents',
     { courseid: courseId },
     [],
+    onError,
   )
 }
 
@@ -237,6 +359,7 @@ export async function getEnrolledUsers(
   baseUrl: string,
   token: string,
   courseId: number,
+  onError?: OnMoodleError,
 ): Promise<MoodleEnrolledUser[]> {
   return safeMoodleCall<MoodleEnrolledUser[]>(
     baseUrl,
@@ -244,6 +367,7 @@ export async function getEnrolledUsers(
     'core_enrol_get_enrolled_users',
     { courseid: courseId },
     [],
+    onError,
   )
 }
 
@@ -262,6 +386,7 @@ export async function getQuizzes(
   baseUrl: string,
   token: string,
   courseId: number,
+  onError?: OnMoodleError,
 ): Promise<MoodleQuiz[]> {
   const data = await safeMoodleCall<{ quizzes?: MoodleQuiz[] }>(
     baseUrl,
@@ -269,6 +394,7 @@ export async function getQuizzes(
     'mod_quiz_get_quizzes_by_courses',
     { courseids: [courseId] },
     {},
+    onError,
   )
   return data.quizzes ?? []
 }
@@ -285,6 +411,7 @@ export async function getQuizAttempts(
   baseUrl: string,
   token: string,
   quizId: number,
+  onError?: OnMoodleError,
 ): Promise<MoodleQuizAttempt[]> {
   const r1 = await safeMoodleCall<{ attempts?: MoodleQuizAttempt[] }>(
     baseUrl,
@@ -292,6 +419,7 @@ export async function getQuizAttempts(
     'mod_quiz_get_user_attempts',
     { quizid: quizId, status: 'all', includepreviews: 0 },
     {},
+    onError,
   )
   if (r1.attempts && r1.attempts.length) return r1.attempts
   const r2 = await safeMoodleCall<{ attempts?: MoodleQuizAttempt[] }>(
@@ -300,6 +428,7 @@ export async function getQuizAttempts(
     'mod_quiz_get_user_attempts',
     { quizid: quizId, userid: 0, status: 'all', includepreviews: 0 },
     {},
+    onError,
   )
   return r2.attempts ?? []
 }
@@ -308,6 +437,7 @@ export async function getQuizAccessInfo(
   baseUrl: string,
   token: string,
   quizId: number,
+  onError?: OnMoodleError,
 ): Promise<Record<string, any>> {
   return safeMoodleCall<Record<string, any>>(
     baseUrl,
@@ -315,6 +445,7 @@ export async function getQuizAccessInfo(
     'mod_quiz_get_quiz_access_information',
     { quizid: quizId },
     {},
+    onError,
   )
 }
 
@@ -326,6 +457,7 @@ export async function getCompletion(
   baseUrl: string,
   token: string,
   courseId: number,
+  onError?: OnMoodleError,
 ): Promise<CompletionData | null> {
   return safeMoodleCall<CompletionData | null>(
     baseUrl,
@@ -333,6 +465,7 @@ export async function getCompletion(
     'core_completion_get_activities_completion_status',
     { courseid: courseId, userid: 0 },
     null,
+    onError,
   )
 }
 

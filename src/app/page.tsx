@@ -45,7 +45,7 @@ export default async function Home() {
         <div className="card-header">
           <span className="card-title">
             <span className="card-icon">🏠</span>
-            Bienvenue, {user.fullName?.split(' ')[0] || 'utilisateur'}
+            Bienvenue, {user.fullName || 'utilisateur'}
           </span>
           <span className="badge badge-info">{user.role === 'admin' ? 'Administrateur' : 'Auditeur'}</span>
         </div>

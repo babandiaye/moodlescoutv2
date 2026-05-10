@@ -224,10 +224,17 @@ export async function auditCourse(
   const { course, baseUrl, token, platformName, platformVersion } = input
   const cid = course.id ?? 0
 
+  // Collecte les fonctions Moodle qui ont fallback (échec après retry transitoire).
+  // Permet de marquer le cours comme `data_incomplete` dans le rapport final.
+  const incompleteCalls: Array<{ wsfunction: string; error: string }> = []
+  const trackErr = (err: Error, wsfunction: string) => {
+    incompleteCalls.push({ wsfunction, error: err.message.slice(0, 200) })
+  }
+
   const [contents, enrolled, quizzes] = await Promise.all([
-    getCourseContents(baseUrl, token, cid),
-    getEnrolledUsers(baseUrl, token, cid),
-    getQuizzes(baseUrl, token, cid),
+    getCourseContents(baseUrl, token, cid, trackErr),
+    getEnrolledUsers(baseUrl, token, cid, trackErr),
+    getQuizzes(baseUrl, token, cid, trackErr),
   ])
 
   const summary = stripHtml(course.summary ?? '')
@@ -287,7 +294,7 @@ export async function auditCourse(
     const qid = q.id
     let attempts: any[] = []
     if (opts.quizDetail === 'detail' || opts.quizDetail === 'both') {
-      attempts = await getQuizAttempts(baseUrl, token, qid)
+      attempts = await getQuizAttempts(baseUrl, token, qid, trackErr)
     }
     totalAtt += attempts.length
     const finished = attempts.filter(a => a.state === 'finished')
@@ -295,7 +302,7 @@ export async function auditCourse(
       .map(a => Number(a.sumgrades ?? 0))
       .filter(s => Number.isFinite(s))
 
-    const qinfo = await getQuizAccessInfo(baseUrl, token, qid)
+    const qinfo = await getQuizAccessInfo(baseUrl, token, qid, trackErr)
     let nbQuestions =
       Number(qinfo.numquestions ?? 0) || Number(q.questioncount ?? 0) || Number(q.numattempts ?? 0)
     if (!nbQuestions && finished.length) {
@@ -391,7 +398,7 @@ export async function auditCourse(
   }
   const lastModuleUpdate = moduleDates.length ? Math.max(...moduleDates) : 0
 
-  const completion = await getCompletion(baseUrl, token, cid)
+  const completion = await getCompletion(baseUrl, token, cid, trackErr)
   let completionRate: number | null = null
   let nbActivitesAvecCompletion = 0
   if (completion?.statuses?.length) {
@@ -564,6 +571,11 @@ export async function auditCourse(
     conformite_checks: conformiteChecks,
     conformite_pct: conformitePct,
     conformite_statut: conformiteStatut,
+
+    // Données incomplètes : true si au moins un appel Moodle WS a fallback
+    // (échec après retry transitoire). Le détail est dans data_incomplete_calls.
+    data_incomplete: incompleteCalls.length > 0,
+    data_incomplete_calls: incompleteCalls,
   }
 }
 
@@ -583,10 +595,20 @@ export async function listCoursesForAudit(
 
   if (!opts.categoryFilter?.length) return { courses, tree }
 
-  const filterSet = new Set(opts.categoryFilter.map(s => s.toLowerCase()))
+  // Match partiel insensible à la casse : un terme du filtre matche dès qu'il
+  // est CONTENU (substring) dans n'importe quel segment du chemin de catégorie.
+  // Exemples :
+  //   filtre "IDA"  matche "IDA", "IDA - Promotion 2024", "Master IDA Pro"
+  //   filtre "L1"   matche "L1", "Licence 1 (L1)", "L1-MIC"
+  // Les termes vides ou whitespace-only sont ignorés.
+  const filterTerms = opts.categoryFilter
+    .map(s => s.toLowerCase().trim())
+    .filter(Boolean)
+  if (filterTerms.length === 0) return { courses, tree }
+
   const matched = courses.filter(c => {
     const path = getCategoryPath(c.categoryid ?? 0, tree).map(s => s.toLowerCase())
-    return path.some(p => filterSet.has(p))
+    return path.some(segment => filterTerms.some(t => segment.includes(t)))
   })
   return { courses: matched, tree }
 }
