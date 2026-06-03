@@ -22,6 +22,9 @@ type Stats = {
   usersError: string | null
   usersMethod: 'auth-list' | 'enrolment'
   usersNbCoursesScanned: number | null
+  tokenUsername: string | null
+  tokenIsAdmin: boolean
+  hasGetUsersFunction: boolean
   computedAt: string
   durationMs: number
   cached: boolean
@@ -213,6 +216,7 @@ export function PlatformsSection({ initial }: Props) {
                             />
                             <UsersInfoBox stats={statsObj} />
                           </div>
+                          <TokenAccountLine stats={statsObj} />
                           <div
                             style={{
                               marginTop: 8,
@@ -384,15 +388,29 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
   const isAccessError = error?.toLowerCase().includes('accessexception')
   const isInvalidToken = error?.toLowerCase().includes('invalidtoken')
 
+  // Détecte le sous-cas du fallback : `core_user_get_users` est EXPOSÉE
+  // (hasGetUsersFunction === true) mais le call a planté (timeout réseau,
+  // payload tronqué, exception Moodle...) → on est tombé en enrolment.
+  // Distinct du cas où la fonction n'est juste pas exposée du tout.
+  const isFallbackDueToTimeout = method === 'enrolment' && stats.hasGetUsersFunction
+
   const hintParts: string[] = []
-  if (total !== null && method === 'enrolment') {
+  if (total !== null && method === 'enrolment' && isFallbackDueToTimeout) {
+    hintParts.push(
+      "Fallback enrolment : l'appel direct core_user_get_users a été tronqué côté Moodle (payload trop gros pour max_execution_time PHP).",
+      `Comptage distinct sur ${nbCourses ?? '?'} cours = ${total.toLocaleString('fr-FR')} users (≈99% du total réel).`,
+      "Pour un compte exact, augmenter côté Moodle :",
+      "  max_execution_time à 300s (php.ini ou .htaccess)",
+      "  memory_limit éventuellement à 512M",
+      "Le code reprendra la méthode directe automatiquement au prochain appel.",
+      "Erreur captée : " + error,
+    )
+  } else if (total !== null && method === 'enrolment') {
     hintParts.push(
       "Comptage via core_enrol_get_enrolled_users (fallback automatique).",
       `Compte les users distincts inscrits dans ≥1 cours sur ${nbCourses ?? '?'} cours scannés.`,
       "Limite : exclut les comptes admins/techniques jamais inscrits.",
-      "Pour un compte exact incluant tous les comptes, accorder côté Moodle :",
-      "  moodle/user:viewdetails  +  moodle/user:viewalldetails",
-      "sur le rôle du token webservice — bascule alors automatiquement sur la méthode directe.",
+      "Pour un compte exact incluant tous les comptes, exposer core_user_get_users dans la liste des fonctions du service côté Moodle.",
     )
   }
   if (total === null && isAccessError) {
@@ -462,12 +480,12 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
               fontWeight: 500,
               padding: '1px 6px',
               borderRadius: 4,
-              background: 'var(--info-bg, #d1ecf1)',
-              color: 'var(--info, #0c5460)',
+              background: isFallbackDueToTimeout ? 'var(--warn-bg, #fff3cd)' : 'var(--info-bg, #d1ecf1)',
+              color: isFallbackDueToTimeout ? 'var(--warn, #856404)' : 'var(--info, #0c5460)',
             }}
-            title="Compte via les inscriptions de cours (fallback). Voir détails au survol."
+            title={isFallbackDueToTimeout ? "Timeout serveur Moodle — fallback via inscriptions" : "Compte via les inscriptions de cours (fallback)"}
           >
-            inscrits
+            {isFallbackDueToTimeout ? 'timeout serveur Moodle' : 'inscrits'}
           </span>
         )}
         {total === null && isAccessError && (
@@ -517,6 +535,87 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
             .map(([method, count]) => `${method} ${count.toLocaleString('fr-FR')}`)
             .join(' · ')}
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Affiche le compte Moodle qui détient le token webservice : utile pour
+ * diagnostiquer les permissions (admin vs rôle dédié) et savoir si
+ * `core_user_get_users` est exposé. Apparaît comme une ligne discrète sous
+ * la grille principale des stats.
+ */
+function TokenAccountLine({ stats }: { stats: Stats }) {
+  const { tokenUsername, tokenIsAdmin, hasGetUsersFunction, usersMethod } = stats
+  if (!tokenUsername) return null
+
+  const hint =
+    tokenIsAdmin && !hasGetUsersFunction
+      ? `Le compte du token est administrateur Moodle. Pour activer le compte exact des utilisateurs, ajouter core_user_get_users à la liste des fonctions exposées par le service webservice.\n\nAdministration → Web services → Services externes → [ton service] → Fonctions → Ajouter des fonctions → cocher "core_user_get_users".`
+      : !tokenIsAdmin
+      ? "Le token est rattaché à un compte non-admin. Bonne pratique de sécurité, mais limite les capabilities disponibles."
+      : hasGetUsersFunction
+      ? "Compte admin + core_user_get_users exposé → comptage direct opérationnel."
+      : undefined
+
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        fontSize: 11,
+        color: 'var(--text3)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+      }}
+      title={hint}
+    >
+      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Compte du token :
+      </span>
+      <span style={{ fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{tokenUsername}</span>
+      {tokenIsAdmin ? (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 500,
+            padding: '1px 6px',
+            borderRadius: 4,
+            background: 'var(--ok-bg, #d4edda)',
+            color: 'var(--ok, #155724)',
+          }}
+        >
+          admin Moodle
+        </span>
+      ) : (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 500,
+            padding: '1px 6px',
+            borderRadius: 4,
+            background: 'var(--surface2)',
+            color: 'var(--text3)',
+          }}
+        >
+          non-admin
+        </span>
+      )}
+      {tokenIsAdmin && !hasGetUsersFunction && usersMethod === 'enrolment' && (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 500,
+            padding: '1px 6px',
+            borderRadius: 4,
+            background: 'var(--info-bg, #d1ecf1)',
+            color: 'var(--info, #0c5460)',
+          }}
+        >
+          ajouter core_user_get_users pour compte exact
+        </span>
       )}
     </div>
   )

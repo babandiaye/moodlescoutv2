@@ -3,24 +3,38 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { signOut } from 'next-auth/react'
+import type { UserRole } from '@prisma/client'
 
 type Props = {
   fullName: string
-  role: 'admin' | 'auditeur'
+  role: UserRole
 }
 
-const NAV_TABS: Array<{ href: string; label: string; matchPrefix: string; adminOnly?: boolean }> = [
+type NavGuard = 'adminOnly' | 'canLaunch'
+
+const NAV_TABS: Array<{ href: string; label: string; matchPrefix: string; guard?: NavGuard }> = [
   { href: '/', label: 'Accueil', matchPrefix: '/' },
-  { href: '/configuration', label: 'Configuration', matchPrefix: '/configuration', adminOnly: true },
-  { href: '/users', label: 'Utilisateurs', matchPrefix: '/users', adminOnly: true },
-  { href: '/audits/new', label: 'Lancer un audit', matchPrefix: '/audits/new' },
+  { href: '/configuration', label: 'Configuration', matchPrefix: '/configuration', guard: 'adminOnly' },
+  { href: '/users', label: 'Utilisateurs', matchPrefix: '/users', guard: 'adminOnly' },
+  { href: '/audits/new', label: 'Lancer un audit', matchPrefix: '/audits/new', guard: 'canLaunch' },
   { href: '/audits', label: 'Audits', matchPrefix: '/audits' },
 ]
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  admin: 'Administrateur',
+  auditeur: 'Auditeur',
+  lecteur: 'Lecteur',
+}
 
 export function TopBar({ fullName, role }: Props) {
   const pathname = usePathname()
 
-  const tabs = NAV_TABS.filter(t => !t.adminOnly || role === 'admin')
+  const tabs = NAV_TABS.filter(t => {
+    if (!t.guard) return true
+    if (t.guard === 'adminOnly') return role === 'admin'
+    if (t.guard === 'canLaunch') return role === 'admin' || role === 'auditeur'
+    return true
+  })
 
   const isActive = (tab: (typeof NAV_TABS)[number]) => {
     if (tab.href === '/') return pathname === '/'
@@ -55,7 +69,7 @@ export function TopBar({ fullName, role }: Props) {
       <div className="topbar-actions">
         <span className="topbar-user">
           <strong>{fullName || '—'}</strong>
-          <span style={{ marginLeft: 6, opacity: 0.7 }}>· {role}</span>
+          <span style={{ marginLeft: 6, opacity: 0.7 }}>· {ROLE_LABELS[role] ?? role}</span>
         </span>
         <button className="btn-action" onClick={() => signOut({ callbackUrl: '/login' })}>
           Déconnexion

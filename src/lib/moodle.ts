@@ -73,9 +73,21 @@ export async function moodleCall<T = any>(
   token: string,
   wsfunction: string,
   params: Record<string, string | number | string[] | number[]> = {},
+  opts: {
+    /** Timeout réseau côté axios. Défaut 30s. À pousser à 120-240s pour des
+     * fonctions retournant un gros payload (ex: core_user_get_users sur une
+     * plateforme avec 20K+ comptes, où Moodle prend 60-180s à sérialiser). */
+    timeoutMs?: number
+    /** True = pas de retry. Utile pour les calls longs (sinon une erreur
+     * transitoire double le temps total) ou les calls où Moodle a déjà
+     * fini son travail et un 2e appel le referait inutilement. */
+    skipRetry?: boolean
+  } = {},
 ): Promise<T> {
   const cleanBase = baseUrl.replace(/\/+$/, '')
   const url = `${cleanBase}/webservice/rest/server.php`
+  const timeoutMs = opts.timeoutMs ?? 30000
+  const maxAttempts = opts.skipRetry ? 1 : MOODLE_RETRY_ATTEMPTS
 
   const formData = new URLSearchParams()
   formData.set('wstoken', token)
@@ -91,11 +103,11 @@ export async function moodleCall<T = any>(
   }
 
   let lastErr: unknown = null
-  for (let attempt = 1; attempt <= MOODLE_RETRY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await axios.post(url, formData.toString(), {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        timeout: 30000,
+        timeout: timeoutMs,
       })
 
       const data = response.data
@@ -109,7 +121,7 @@ export async function moodleCall<T = any>(
     } catch (err) {
       lastErr = err
       const transient = isTransientError(err)
-      if (!transient || attempt >= MOODLE_RETRY_ATTEMPTS) {
+      if (!transient || attempt >= maxAttempts) {
         throw err
       }
       // Retry après backoff
@@ -142,12 +154,19 @@ export async function safeMoodleCall<T>(
 
 export type MoodleSiteInfo = {
   sitename: string
+  /** Nom d'utilisateur du compte qui détient le token webservice. */
   username: string
   firstname: string
   lastname: string
   fullname: string
+  /** ID Moodle du compte du token. uid=2 ou uid=8 sont typiquement des admins. */
+  userid: number
+  /** True si le compte du token est administrateur principal Moodle. */
+  userissiteadmin: boolean
   release: string
   version: string
+  /** Liste des fonctions WS exposées au service ; chaque entrée a au minimum `name`. */
+  functions: Array<{ name: string; version?: string }>
 }
 
 export async function getSiteInfo(baseUrl: string, token: string): Promise<MoodleSiteInfo> {
@@ -215,48 +234,99 @@ export async function getUsersTotalCount(
 ): Promise<UsersCountResult> {
   const methods = getAuthMethods()
 
+  // On wrap chaque appel pour capter sa durée — sert à diagnostiquer les
+  // timeouts PHP/proxy côté Moodle sur les très grosses plateformes.
   const results = await Promise.allSettled(
-    methods.map(method =>
-      moodleCall<{ users?: Array<{ id: number }>; warnings?: unknown[] }>(
-        baseUrl,
-        token,
-        'core_user_get_users',
-        {
-          'criteria[0][key]': 'auth',
-          'criteria[0][value]': method,
-          // 0 = pas de limite côté serveur Moodle (sinon défaut souvent à 100)
-          limitnum: 0,
-          limitfrom: 0,
-        },
-      ),
-    ),
+    methods.map(async method => {
+      const t0 = Date.now()
+      try {
+        const response = await moodleCall<{ users?: Array<{ id: number }>; warnings?: unknown[] }>(
+          baseUrl,
+          token,
+          'core_user_get_users',
+          {
+            'criteria[0][key]': 'auth',
+            'criteria[0][value]': method,
+            // ATTENTION : ne PAS passer limitnum/limitfrom — la signature de
+            // core_user_get_users n'accepte QUE le paramètre `criteria[]`.
+            // Tout paramètre supplémentaire (limitnum, limitfrom, etc.) déclenche
+            // une `invalidparameter` qui annule tout l'appel.
+            // Moodle renvoie alors tous les users matchant le critère sans limite.
+          },
+          {
+            // Sur les grosses plateformes (~20K users via oidc), Moodle peut
+            // mettre 60-180s à sérialiser tout le payload. On laisse 240s
+            // (max_execution_time côté Moodle est censé être à 300s).
+            // skipRetry car retry doublerait juste l'attente sans aider :
+            // si Moodle a planté, il replantera.
+            timeoutMs: 240_000,
+            skipRetry: true,
+          },
+        )
+        return { method, durationMs: Date.now() - t0, response }
+      } catch (err) {
+        // Re-throw avec contexte (method/duration) pour le tracking en aval.
+        throw Object.assign(err as Error, { method, durationMs: Date.now() - t0 })
+      }
+    }),
   )
 
   const breakdown: Record<string, number> = {}
   const errors: string[] = []
   let total = 0
-  let anyFulfilled = false
+  let anyValidArray = false
+  // Drapeau critique : true si AU MOINS UNE méthode a renvoyé une réponse
+  // anormale (HTTP 200 mais pas de tableau `users`). Cause typique : payload
+  // tronqué par max_execution_time PHP/Moodle ou par proxy en amont.
+  // Quand c'est le cas, le total auth-list est forcément faux — on bascule
+  // sur l'enrolment qui est paginé naturellement (1 cours = 1 call).
+  let anyMalformed = false
 
-  for (let i = 0; i < methods.length; i++) {
-    const method = methods[i]
-    const r = results[i]
-    if (r.status === 'fulfilled' && Array.isArray(r.value?.users)) {
-      anyFulfilled = true
-      const count = r.value.users.length
-      if (count > 0) {
-        breakdown[method] = count
-        total += count
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      const { method, durationMs, response } = r.value
+      if (Array.isArray(response?.users)) {
+        anyValidArray = true
+        const count = response.users.length
+        if (count > 0) {
+          breakdown[method] = count
+          total += count
+        }
+      } else {
+        anyMalformed = true
+        errors.push(
+          `${method}: réponse Moodle invalide après ${durationMs}ms ` +
+            `(probablement payload tronqué — max_execution_time PHP ou proxy)`,
+        )
       }
     } else if (r.status === 'rejected') {
-      const msg = (r.reason as Error)?.message ?? 'erreur inconnue'
-      errors.push(`${method}: ${msg.slice(0, 200)}`)
+      const reason = r.reason as Error & { method?: string; durationMs?: number }
+      const method = reason.method ?? 'inconnu'
+      const ms = reason.durationMs ?? 0
+      errors.push(`${method} (${ms}ms): ${(reason.message ?? String(reason)).slice(0, 180)}`)
     }
   }
 
-  if (!anyFulfilled) {
+  // Déclenchement du fallback dès qu'une méthode n'a PAS répondu proprement :
+  //   - rejected (timeout réseau ECONNABORTED, accessexception Moodle, etc.)
+  //   - fulfilled-malformed (payload tronqué par max_execution_time PHP)
+  //   - aucune méthode n'a renvoyé un tableau valide
+  // Critère : `errors.length > 0` couvre les deux premiers ; `!anyValidArray`
+  // couvre le 3e (toutes ont planté).
+  //
+  // Pourquoi strict : si une seule méthode plante, le total est forcément
+  // sous-estimé (cf. P13 LSHE où manual=7 mais oidc devait remonter ~20000).
+  // Le fallback enrolment est paginé naturellement (1 cours = 1 appel) donc
+  // robuste même sur les grosses plateformes.
+  if (errors.length > 0 || !anyValidArray) {
     logger.info(
-      { baseUrl, errors, methods },
-      'getUsersTotalCount : auth-list a échoué, fallback enrolment',
+      {
+        baseUrl,
+        errors,
+        methods,
+        reason: anyMalformed ? 'malformed' : !anyValidArray ? 'no-valid-array' : 'partial-failure',
+      },
+      'getUsersTotalCount : auth-list incomplet, fallback enrolment',
     )
     try {
       const fb = await countDistinctEnrolledUsers(baseUrl, token)
@@ -264,9 +334,7 @@ export async function getUsersTotalCount(
         total: fb.total,
         breakdown: { 'enrôlés (≥1 cours)': fb.total ?? 0 },
         partial: fb.partial,
-        // Concat la 1re erreur auth-list + les erreurs enrôlement (tronquées
-        // pour ne pas noyer l'UI).
-        errors: [...errors.slice(0, 1), ...fb.errors.slice(0, 3)],
+        errors: [...errors.slice(0, 2), ...fb.errors.slice(0, 3)],
         method: 'enrolment',
         nbCoursesScanned: fb.nbCoursesScanned,
       }

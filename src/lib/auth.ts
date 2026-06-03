@@ -1,9 +1,22 @@
 import NextAuth from 'next-auth'
 import KeycloakProvider from 'next-auth/providers/keycloak'
+import { cookies } from 'next/headers'
 import { prisma } from '@/lib/prisma'
 import type { UserRole } from '@prisma/client'
 
 const ADMIN_DIRECTION = process.env.ADMIN_DIRECTION ?? 'DITSI'
+
+// Affiliations Keycloak autorisées à se connecter à MoodleScout.
+// Le claim `affiliation` est renvoyé par senid.unchk.sn dans le token ID.
+// Tout autre profil (typiquement "Étudiant") est refusé AVANT toute écriture
+// en BD — on ne veut pas créer de compte inutile pour des refusés.
+const ALLOWED_AFFILIATIONS = new Set(['Personnel', 'Tuteur'])
+
+// Nom du cookie qui stocke temporairement l'id_token Keycloak quand un
+// utilisateur est rejeté au signIn. Réutilisé par la Server Action
+// "Se connecter avec un autre compte" pour faire un logout SILENCIEUX
+// (avec id_token_hint) — sans la page de confirmation Keycloak.
+const PENDING_ID_TOKEN_COOKIE = 'ms-pending-id-token'
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
@@ -14,8 +27,35 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
-    async signIn({ profile }) {
+    async signIn({ profile, account }) {
       if (!profile?.sub) return false
+
+      // Restriction Keycloak : seuls "Personnel" et "Tuteur" peuvent accéder.
+      // Retourne une URL de redirection custom pour que /login affiche un
+      // message explicite plutôt que l'erreur générique NextAuth.
+      const affiliation = (profile as { affiliation?: string }).affiliation ?? null
+      if (!affiliation || !ALLOWED_AFFILIATIONS.has(affiliation)) {
+        // Avant de rejeter : on stocke l'id_token Keycloak dans un cookie
+        // httpOnly court (5 min). Le bouton "Changer de compte" l'utilisera
+        // comme id_token_hint pour un logout silencieux côté Keycloak.
+        // Sans ce hint, Keycloak affiche une page "Voulez-vous vous déconnecter ?".
+        if (account?.id_token) {
+          try {
+            const store = await cookies()
+            store.set(PENDING_ID_TOKEN_COOKIE, account.id_token, {
+              httpOnly: true,
+              secure: true,
+              sameSite: 'lax',
+              maxAge: 300,
+              path: '/',
+            })
+          } catch {
+            // Le contexte ne permet pas d'écrire un cookie : on continue
+            // quand même — la confirmation Keycloak s'affichera, c'est tout.
+          }
+        }
+        return '/login?error=affiliation_required'
+      }
 
       const direction = (profile as { direction?: string }).direction ?? null
       const isAdmin = direction === ADMIN_DIRECTION

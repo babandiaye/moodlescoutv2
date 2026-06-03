@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
 import { logger } from '@/lib/logger'
+import { canViewAudit, canModifyAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -36,7 +37,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     },
   })
   if (!session) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
-  if (a.user.role !== 'admin' && session.userId !== a.user.id) {
+  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
     return NextResponse.json({ error: 'Accès refusé' }, { status: 403 })
   }
 
@@ -53,7 +54,8 @@ export async function DELETE(_req: NextRequest, ctx: Ctx) {
     select: { userId: true, status: true },
   })
   if (!session) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
-  if (a.user.role !== 'admin' && session.userId !== a.user.id) {
+  // Suppression : on utilise canModifyAudit (plus strict) → le lecteur ne peut PAS supprimer.
+  if (!canModifyAudit(a.user.role, a.user.id, session.userId)) {
     return NextResponse.json({ error: 'Accès refusé' }, { status: 403 })
   }
 

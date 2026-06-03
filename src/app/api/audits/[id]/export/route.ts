@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
 import { exportToExcel, exportToPdf } from '@/lib/exports'
 import { logger } from '@/lib/logger'
+import { canViewAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -49,7 +50,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     },
   })
   if (!session) return new Response('Introuvable', { status: 404 })
-  if (a.user.role !== 'admin' && session.userId !== a.user.id) {
+  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
     return new Response('Accès refusé', { status: 403 })
   }
 

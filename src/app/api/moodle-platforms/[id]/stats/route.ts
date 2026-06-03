@@ -33,6 +33,12 @@ type Stats = {
   usersMethod: 'auth-list' | 'enrolment'
   /** Nombre de cours scannés (pertinent uniquement en mode 'enrolment') */
   usersNbCoursesScanned: number | null
+  /** Compte Moodle qui détient le token webservice (username, ou null si site_info a échoué). */
+  tokenUsername: string | null
+  /** True si le compte du token est administrateur principal Moodle. */
+  tokenIsAdmin: boolean
+  /** True si la fonction core_user_get_users est exposée au service (= compte direct possible). */
+  hasGetUsersFunction: boolean
   computedAt: string
   durationMs: number
   cached: boolean
@@ -85,6 +91,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       getUsersTotalCount(platform.url, token),
     ])
 
+    const hasGetUsersFunction =
+      siteInfo?.functions?.some(f => f.name === 'core_user_get_users') ?? false
+
     const stats: Stats = {
       url: platform.url,
       sitename: siteInfo?.sitename ?? null,
@@ -96,6 +105,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       usersError: usersResult.errors[0] ?? null,
       usersMethod: usersResult.method,
       usersNbCoursesScanned: usersResult.nbCoursesScanned ?? null,
+      tokenUsername: siteInfo?.username ?? null,
+      tokenIsAdmin: siteInfo?.userissiteadmin ?? false,
+      hasGetUsersFunction,
       computedAt: new Date().toISOString(),
       durationMs: Date.now() - start,
       cached: false,

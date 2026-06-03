@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import type { UserRole } from '@prisma/client'
 
 type User = {
   id: string
@@ -9,11 +10,23 @@ type User = {
   preferredUsername: string
   fullName: string | null
   direction: string | null
-  role: 'admin' | 'auditeur'
+  role: UserRole
   isActive: boolean
   createdAt: string | Date
   lastLogin: string | Date | null
   _count: { auditSessions: number }
+}
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  admin: '★ Admin',
+  auditeur: 'Auditeur',
+  lecteur: 'Lecteur',
+}
+
+const ROLE_BADGE_CLASS: Record<UserRole, string> = {
+  admin: 'badge-success',
+  auditeur: 'badge-neutral',
+  lecteur: 'badge-info',
 }
 
 type Props = {
@@ -49,7 +62,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [filterRole, setFilterRole] = useState<'all' | 'admin' | 'auditeur'>('all')
+  const [filterRole, setFilterRole] = useState<'all' | UserRole>('all')
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim()
@@ -70,6 +83,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
       total: users.length,
       admins: users.filter(u => u.role === 'admin').length,
       auditeurs: users.filter(u => u.role === 'auditeur').length,
+      lecteurs: users.filter(u => u.role === 'lecteur').length,
       actifs: users.filter(u => u.isActive).length,
       desactives: users.filter(u => !u.isActive).length,
     }),
@@ -78,7 +92,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
 
   const patchUser = async (
     id: string,
-    body: { role?: 'admin' | 'auditeur'; isActive?: boolean },
+    body: { role?: UserRole; isActive?: boolean },
     confirmMsg: string,
   ) => {
     if (!confirm(confirmMsg)) return
@@ -117,10 +131,13 @@ export function UsersListSection({ initial, currentUserId }: Props) {
           <span className="card-title">
             <span className="card-icon">👥</span> Gestion des utilisateurs
           </span>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <span className="badge badge-info">{stats.total} comptes</span>
             <span className="badge badge-success">{stats.admins} admin(s)</span>
             <span className="badge badge-neutral">{stats.auditeurs} auditeur(s)</span>
+            {stats.lecteurs > 0 && (
+              <span className="badge badge-info">{stats.lecteurs} lecteur(s)</span>
+            )}
             {stats.desactives > 0 && (
               <span className="badge badge-danger">{stats.desactives} désactivé(s)</span>
             )}
@@ -139,11 +156,12 @@ export function UsersListSection({ initial, currentUserId }: Props) {
             />
             <select
               value={filterRole}
-              onChange={e => setFilterRole(e.target.value as 'all' | 'admin' | 'auditeur')}
+              onChange={e => setFilterRole(e.target.value as 'all' | UserRole)}
             >
               <option value="all">Tous rôles</option>
               <option value="admin">Admins uniquement</option>
               <option value="auditeur">Auditeurs uniquement</option>
+              <option value="lecteur">Lecteurs uniquement</option>
             </select>
           </div>
 
@@ -192,10 +210,8 @@ export function UsersListSection({ initial, currentUserId }: Props) {
                       </td>
                       <td style={{ fontSize: 12 }}>{u.direction ?? '—'}</td>
                       <td>
-                        <span
-                          className={`badge ${u.role === 'admin' ? 'badge-success' : 'badge-neutral'}`}
-                        >
-                          {u.role === 'admin' ? '★ admin' : 'auditeur'}
+                        <span className={`badge ${ROLE_BADGE_CLASS[u.role]}`}>
+                          {ROLE_LABELS[u.role]}
                         </span>
                       </td>
                       <td>
@@ -210,45 +226,26 @@ export function UsersListSection({ initial, currentUserId }: Props) {
                         {formatDate(u.lastLogin)}
                       </td>
                       <td>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          {u.role === 'auditeur' ? (
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 8px' }}
-                              disabled={isBusy || isMe}
-                              onClick={() =>
-                                patchUser(
-                                  u.id,
-                                  { role: 'admin' },
-                                  `Promouvoir ${u.fullName || u.email} en administrateur ?`,
-                                )
-                              }
-                            >
-                              ↑ admin
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: 11, padding: '3px 8px' }}
-                              disabled={isBusy || isMe}
-                              title={
-                                isMe
-                                  ? 'Vous ne pouvez pas modifier votre propre rôle.'
-                                  : undefined
-                              }
-                              onClick={() =>
-                                patchUser(
-                                  u.id,
-                                  { role: 'auditeur' },
-                                  `Rétrograder ${u.fullName || u.email} en auditeur ?`,
-                                )
-                              }
-                            >
-                              ↓ auditeur
-                            </button>
-                          )}
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <select
+                            value={u.role}
+                            disabled={isBusy || isMe}
+                            title={isMe ? 'Vous ne pouvez pas modifier votre propre rôle.' : 'Changer le rôle'}
+                            style={{ fontSize: 11, padding: '3px 6px' }}
+                            onChange={e => {
+                              const newRole = e.target.value as UserRole
+                              if (newRole === u.role) return
+                              patchUser(
+                                u.id,
+                                { role: newRole },
+                                `Changer le rôle de ${u.fullName || u.email} en "${ROLE_LABELS[newRole]}" ?`,
+                              )
+                            }}
+                          >
+                            <option value="admin">★ Admin</option>
+                            <option value="auditeur">Auditeur</option>
+                            <option value="lecteur">Lecteur</option>
+                          </select>
                           {u.isActive ? (
                             <button
                               type="button"

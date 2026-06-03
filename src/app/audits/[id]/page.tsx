@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { AuditLiveView } from '@/components/audit-live-view'
 import { AuditResultsView } from '@/components/audit-results-view'
 import { CancelAuditButton } from '@/components/cancel-audit-button'
+import { canViewAudit, canModifyAudit } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,9 +46,10 @@ export default async function AuditDetailPage({ params }: Ctx) {
     },
   })
   if (!audit) notFound()
-  if (session.user.role !== 'admin' && audit.userId !== session.user.id) {
+  if (!canViewAudit(session.user.role, session.user.id, audit.userId)) {
     redirect('/audits')
   }
+  const canModify = canModifyAudit(session.user.role, session.user.id, audit.userId)
 
   const isFinal = ['completed', 'failed', 'cancelled'].includes(audit.status)
   const isRunning = audit.status === 'running' || audit.status === 'pending'
@@ -102,7 +104,7 @@ export default async function AuditDetailPage({ params }: Ctx) {
                 </a>
               </>
             )}
-            {isRunning && <CancelAuditButton id={audit.id} />}
+            {isRunning && canModify && <CancelAuditButton id={audit.id} />}
             <Link href="/audits" className="btn btn-secondary" style={{ fontSize: 12 }}>
               ← Retour
             </Link>

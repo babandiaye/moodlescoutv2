@@ -3,12 +3,15 @@ import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { NewAuditForm } from '@/components/new-audit-form'
+import { canLaunchAudit, isAdmin } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
 export default async function NewAuditPage() {
   const session = await auth()
   if (!session?.user) redirect('/login')
+  // Lecteur bloqué — redirection silencieuse vers la liste des audits.
+  if (!canLaunchAudit(session.user.role)) redirect('/audits')
 
   const [platforms, llmConfigs] = await Promise.all([
     prisma.moodlePlatform.findMany({
@@ -33,7 +36,7 @@ export default async function NewAuditPage() {
           <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 12 }}>
             {platforms.length === 0 && 'Aucune plateforme Moodle configurée. '}
             {llmConfigs.length === 0 && 'Aucune configuration LLM disponible. '}
-            {session.user.role === 'admin' ? (
+            {isAdmin(session.user.role) ? (
               <>
                 Rendez-vous sur la page <Link href="/configuration">Configuration</Link> pour les ajouter.
               </>

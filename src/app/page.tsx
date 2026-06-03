@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
+import { canViewAllAudits, canLaunchAudit, isAdmin, roleLabel } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -8,7 +9,7 @@ export default async function Home() {
   const session = await auth()
   const user = session!.user
 
-  const where = user.role === 'admin' ? {} : { userId: user.id }
+  const where = canViewAllAudits(user.role) ? {} : { userId: user.id }
 
   const [platforms, llmConfigs, totalAudits, recent] = await Promise.all([
     prisma.moodlePlatform.count(),
@@ -47,16 +48,20 @@ export default async function Home() {
             <span className="card-icon">🏠</span>
             Bienvenue, {user.fullName || 'utilisateur'}
           </span>
-          <span className="badge badge-info">{user.role === 'admin' ? 'Administrateur' : 'Auditeur'}</span>
+          <span className="badge badge-info">{roleLabel(user.role)}</span>
         </div>
         <div className="card-body">
           <p style={{ color: 'var(--text2)', fontSize: 13, marginBottom: 16 }}>
             Plateforme d&apos;audit pédagogique des cours Moodle de l&apos;Université Numérique Cheikh Hamidou Kane.
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Link href="/audits/new" className="btn btn-primary">▶ Lancer un nouvel audit</Link>
-            <Link href="/audits" className="btn btn-secondary">Voir mes audits</Link>
-            {user.role === 'admin' && (
+            {canLaunchAudit(user.role) && (
+              <Link href="/audits/new" className="btn btn-primary">▶ Lancer un nouvel audit</Link>
+            )}
+            <Link href="/audits" className="btn btn-secondary">
+              {canViewAllAudits(user.role) ? 'Voir tous les audits' : 'Voir mes audits'}
+            </Link>
+            {isAdmin(user.role) && (
               <Link href="/configuration" className="btn btn-secondary">Configuration</Link>
             )}
           </div>
@@ -83,7 +88,11 @@ export default async function Home() {
         <div className="card-body">
           {recent.length === 0 ? (
             <p style={{ color: 'var(--text3)', fontSize: 13 }}>
-              Aucun audit pour le moment. <Link href="/audits/new">Lancez votre premier audit</Link>.
+              {canLaunchAudit(user.role) ? (
+                <>Aucun audit pour le moment. <Link href="/audits/new">Lancez votre premier audit</Link>.</>
+              ) : (
+                <>Aucun audit pour le moment.</>
+              )}
             </p>
           ) : (
             recent.map(r => (

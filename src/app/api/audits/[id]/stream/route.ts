@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
 import { SSE_CHANNEL } from '@/lib/queue'
 import { logger } from '@/lib/logger'
+import { canViewAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -20,7 +21,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     select: { userId: true, status: true, doneCourses: true, failedCourses: true, totalCourses: true },
   })
   if (!session) return new Response('Audit introuvable', { status: 404 })
-  if (a.user.role !== 'admin' && session.userId !== a.user.id) {
+  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
     return new Response('Accès refusé', { status: 403 })
   }
 

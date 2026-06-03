@@ -3,13 +3,14 @@ import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { PlatformsSection } from '@/components/platforms-section'
 import { LlmConfigsSection } from '@/components/llm-configs-section'
+import { isAdmin } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
 export default async function ConfigurationPage() {
   const session = await auth()
   if (!session?.user) redirect('/login')
-  if (session.user.role !== 'admin') redirect('/')
+  if (!isAdmin(session.user.role)) redirect('/')
 
   const [platforms, llmConfigs] = await Promise.all([
     prisma.moodlePlatform.findMany({

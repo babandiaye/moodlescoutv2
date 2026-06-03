@@ -14,6 +14,7 @@ datasource db {
 enum UserRole {
   admin
   auditeur
+  lecteur
 }
 
 enum AuditStatus {

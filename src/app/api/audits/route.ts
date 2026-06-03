@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { requireAuth, rateLimit } from '@/lib/api-helpers'
 import { getAuditQueue } from '@/lib/queue'
 import { logger } from '@/lib/logger'
+import { canViewAllAudits, canLaunchAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url)
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 20), 100)
-  const where = a.user.role === 'admin' ? {} : { userId: a.user.id }
+  const where = canViewAllAudits(a.user.role) ? {} : { userId: a.user.id }
 
   const sessions = await prisma.auditSession.findMany({
     where,
@@ -55,6 +56,14 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const a = await requireAuth()
   if (!a.ok) return a.response
+
+  // Blocage rôle `lecteur` : ne peut PAS lancer d'audit (lecture seule globale).
+  if (!canLaunchAudit(a.user.role)) {
+    return NextResponse.json(
+      { error: "Votre rôle ne permet pas de lancer un audit." },
+      { status: 403 },
+    )
+  }
 
   // Rate limit per-user : protège contre l'abus individuel
   const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {

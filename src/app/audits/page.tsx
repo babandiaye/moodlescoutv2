@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { DeleteAuditButton } from '@/components/delete-audit-button'
+import { canViewAllAudits, canLaunchAudit, canModifyAudit } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,7 +17,7 @@ const STATUS_BADGE: Record<string, string> = {
 export default async function AuditsPage() {
   const session = await auth()
   const user = session!.user
-  const where = user.role === 'admin' ? {} : { userId: user.id }
+  const where = canViewAllAudits(user.role) ? {} : { userId: user.id }
 
   const sessions = await prisma.auditSession.findMany({
     where,
@@ -32,6 +33,7 @@ export default async function AuditsPage() {
       startedAt: true,
       finishedAt: true,
       createdAt: true,
+      userId: true,
       user: { select: { fullName: true } },
       platform: { select: { name: true } },
       llmConfig: { select: { provider: true, model: true } },
@@ -43,16 +45,22 @@ export default async function AuditsPage() {
       <div className="card">
         <div className="card-header">
           <span className="card-title">
-            <span className="card-icon">🗄</span> Audits {user.role === 'admin' ? '(tous)' : 'personnels'}
+            <span className="card-icon">🗄</span> Audits {canViewAllAudits(user.role) ? '(tous)' : 'personnels'}
           </span>
-          <Link href="/audits/new" className="btn btn-primary" style={{ fontSize: 12 }}>
-            + Nouvel audit
-          </Link>
+          {canLaunchAudit(user.role) && (
+            <Link href="/audits/new" className="btn btn-primary" style={{ fontSize: 12 }}>
+              + Nouvel audit
+            </Link>
+          )}
         </div>
         <div className="card-body">
           {sessions.length === 0 ? (
             <p style={{ color: 'var(--text3)', fontSize: 13 }}>
-              Aucun audit. <Link href="/audits/new">Lancez votre premier audit</Link>.
+              {canLaunchAudit(user.role) ? (
+                <>Aucun audit. <Link href="/audits/new">Lancez votre premier audit</Link>.</>
+              ) : (
+                <>Aucun audit pour le moment.</>
+              )}
             </p>
           ) : (
             sessions.map(s => {
@@ -82,7 +90,7 @@ export default async function AuditsPage() {
                         {s.doneCourses}/{s.totalCourses} cours · {pct}%
                         {s.failedCourses > 0 ? ` · ${s.failedCourses} échec(s)` : ''}
                       </span>
-                      {user.role === 'admin' && (
+                      {canViewAllAudits(user.role) && (
                         <span style={{ fontSize: 11, color: 'var(--text3)' }}>
                           par {s.user.fullName ?? '—'}
                         </span>
@@ -106,7 +114,9 @@ export default async function AuditsPage() {
                     >
                       Ouvrir
                     </Link>
-                    <DeleteAuditButton id={s.id} sessionKey={s.sessionKey} />
+                    {canModifyAudit(user.role, user.id, s.userId) && (
+                      <DeleteAuditButton id={s.id} sessionKey={s.sessionKey} />
+                    )}
                   </div>
                 </div>
               )

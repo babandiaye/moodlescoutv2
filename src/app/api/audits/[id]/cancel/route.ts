@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
 import { SSE_CHANNEL } from '@/lib/queue'
 import { logger } from '@/lib/logger'
+import { canModifyAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -20,7 +21,8 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
     select: { userId: true, status: true },
   })
   if (!session) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
-  if (a.user.role !== 'admin' && session.userId !== a.user.id) {
+  // Annulation : strictement admin OU propriétaire — le lecteur NE PEUT PAS annuler.
+  if (!canModifyAudit(a.user.role, a.user.id, session.userId)) {
     return NextResponse.json({ error: 'Accès refusé' }, { status: 403 })
   }
   if (['completed', 'failed', 'cancelled'].includes(session.status)) {
