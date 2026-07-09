@@ -1,23 +1,18 @@
 import Link from 'next/link'
 import { notFound, redirect } from 'next/navigation'
+import { ChartBarIcon, ArrowDownTrayIcon, ArrowLeftIcon } from '@heroicons/react/24/outline'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { AuditLiveView } from '@/components/audit-live-view'
 import { AuditResultsView } from '@/components/audit-results-view'
 import { CancelAuditButton } from '@/components/cancel-audit-button'
-import { canViewAudit, canModifyAudit } from '@/lib/permissions'
+import { RelaunchAuditButton } from '@/components/relaunch-audit-button'
+import { canViewAudit, canModifyAudit, canLaunchAudit, isAdmin } from '@/lib/permissions'
+import { statusBadgeClass, statusLabel } from '@/lib/audit-status'
 
 export const dynamic = 'force-dynamic'
 
 type Ctx = { params: Promise<{ id: string }> }
-
-const STATUS_BADGE: Record<string, string> = {
-  pending: 'badge-neutral',
-  running: 'badge-warn',
-  completed: 'badge-success',
-  failed: 'badge-danger',
-  cancelled: 'badge-danger',
-}
 
 export default async function AuditDetailPage({ params }: Ctx) {
   const session = await auth()
@@ -28,7 +23,7 @@ export default async function AuditDetailPage({ params }: Ctx) {
     where: { id },
     include: {
       user: { select: { fullName: true } },
-      platform: { select: { name: true, url: true, version: true } },
+      platform: { select: { name: true, url: true, version: true, isActive: true } },
       llmConfig: { select: { name: true, provider: true, model: true } },
       courseAudits: {
         orderBy: { createdAt: 'asc' },
@@ -47,6 +42,10 @@ export default async function AuditDetailPage({ params }: Ctx) {
   })
   if (!audit) notFound()
   if (!canViewAudit(session.user.role, session.user.id, audit.userId)) {
+    redirect('/audits')
+  }
+  // Un audit sur une plateforme désactivée n'est visible que par l'admin.
+  if (!audit.platform.isActive && !isAdmin(session.user.role)) {
     redirect('/audits')
   }
   const canModify = canModifyAudit(session.user.role, session.user.id, audit.userId)
@@ -75,12 +74,12 @@ export default async function AuditDetailPage({ params }: Ctx) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">
-            <span className="card-icon">📊</span>
+            <ChartBarIcon className="card-icon" />
             <span style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>{audit.sessionKey}</span>
           </span>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <span className={`badge ${STATUS_BADGE[audit.status] ?? 'badge-neutral'}`}>
-              {audit.status}
+            <span className={`badge ${statusBadgeClass(audit.status)}`}>
+              {statusLabel(audit.status)}
             </span>
             {hasResults && (
               <>
@@ -91,7 +90,7 @@ export default async function AuditDetailPage({ params }: Ctx) {
                   target="_blank"
                   rel="noopener"
                 >
-                  ↓ PDF{!isFinal ? ' (partiel)' : ''}
+                  <ArrowDownTrayIcon style={{ width: 14, height: 14 }} /> PDF{!isFinal ? ' (partiel)' : ''}
                 </a>
                 <a
                   className="btn btn-success"
@@ -100,13 +99,26 @@ export default async function AuditDetailPage({ params }: Ctx) {
                   target="_blank"
                   rel="noopener"
                 >
-                  ↓ Excel{!isFinal ? ' (partiel)' : ''}
+                  <ArrowDownTrayIcon style={{ width: 14, height: 14 }} /> Excel{!isFinal ? ' (partiel)' : ''}
+                </a>
+                <a
+                  className="btn btn-secondary"
+                  style={{ fontSize: 12 }}
+                  href={`/api/audits/${audit.id}/export?format=csv`}
+                  target="_blank"
+                  rel="noopener"
+                  title="Export CSV (RFC 4180, UTF-8 avec BOM) — pour tableur ou ré-import"
+                >
+                  <ArrowDownTrayIcon style={{ width: 14, height: 14 }} /> CSV{!isFinal ? ' (partiel)' : ''}
                 </a>
               </>
             )}
             {isRunning && canModify && <CancelAuditButton id={audit.id} />}
+            {isFinal && canModify && canLaunchAudit(session.user.role) && (
+              <RelaunchAuditButton id={audit.id} />
+            )}
             <Link href="/audits" className="btn btn-secondary" style={{ fontSize: 12 }}>
-              ← Retour
+              <ArrowLeftIcon style={{ width: 14, height: 14 }} /> Retour
             </Link>
           </div>
         </div>

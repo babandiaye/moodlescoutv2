@@ -1,13 +1,19 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { AcademicCapIcon, CheckIcon, XMarkIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
+import { Pagination } from './pagination'
+
+const ICON_INLINE = { width: 12, height: 12, verticalAlign: '-2px', display: 'inline-block' as const }
 
 type Platform = {
   id: string
   name: string
   url: string
   version: string
+  isActive: boolean
   createdAt: Date | string
 }
 
@@ -45,6 +51,94 @@ export function PlatformsSection({ initial }: Props) {
   const [testing, setTesting] = useState<Record<string, 'loading' | { ok: true; sitename?: string; release?: string; latencyMs: number } | { ok: false; error: string }>>({})
   type StatsState = 'loading' | { error: string } | Stats
   const [stats, setStats] = useState<Record<string, StatsState | undefined>>({})
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  useEffect(() => { setPage(1) }, [pageSize])
+  const paged = useMemo(
+    () => platforms.slice((page - 1) * pageSize, page * pageSize),
+    [platforms, page, pageSize],
+  )
+  const pagedIds = paged.map(p => p.id)
+  const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selected.has(id))
+  const somePagedSelected = pagedIds.some(id => selected.has(id))
+
+  const toggleOne = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const togglePage = () => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (allPagedSelected) pagedIds.forEach(id => next.delete(id))
+      else pagedIds.forEach(id => next.add(id))
+      return next
+    })
+  }
+
+  const handleToggleActive = async (p: Platform) => {
+    setError(null)
+    const newVal = !p.isActive
+    try {
+      const res = await fetch(`/api/moodle-platforms/${p.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: newVal }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setPlatforms(ps => ps.map(x => (x.id === p.id ? { ...x, isActive: newVal } : x)))
+      setSuccess(`Plateforme « ${p.name} » ${newVal ? 'activée' : 'désactivée'}`)
+      router.refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const handleBulkToggle = async (isActive: boolean) => {
+    setError(null)
+    setSuccess(null)
+    const ids = Array.from(selected)
+    if (ids.length === 0) return
+    if (!confirm(`${isActive ? 'Activer' : 'Désactiver'} ${ids.length} plateforme(s) sélectionnée(s) ?`)) return
+    setBulkBusy(true)
+    try {
+      const res = await fetch('/api/moodle-platforms/bulk', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, isActive }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setPlatforms(ps => ps.map(x => (selected.has(x.id) ? { ...x, isActive } : x)))
+      setSelected(new Set())
+      setSuccess(`${data.updated ?? ids.length} plateforme(s) ${isActive ? 'activée(s)' : 'désactivée(s)'}`)
+      router.refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  const handleClearCache = async (id: string, name: string) => {
+    if (!confirm(`Vider le cache Redis des appels Moodle Web Services pour « ${name} » ?\n\nUtile si vous venez de corriger quelque chose côté Moodle (token, capability, fonction ajoutée) — les prochaines requêtes iront directement sur Moodle sans attendre l'expiration du cache.`)) return
+    setError(null)
+    try {
+      const res = await fetch(`/api/moodle-platforms/${id}/cache`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setSuccess(`Cache WS de « ${name} » vidé (${data.deleted ?? 0} clés)`)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
 
   const handleStats = async (id: string, refresh = false) => {
     setStats(s => ({ ...s, [id]: 'loading' }))
@@ -122,7 +216,7 @@ export function PlatformsSection({ initial }: Props) {
     <div className="card">
       <div className="card-header">
         <span className="card-title">
-          <span className="card-icon">🎓</span> Plateformes Moodle
+          <AcademicCapIcon className="card-icon" /> Plateformes Moodle
         </span>
         <span className="badge badge-info">{platforms.length} configurée(s)</span>
       </div>
@@ -131,35 +225,125 @@ export function PlatformsSection({ initial }: Props) {
         {success && <div className="success-banner">{success}</div>}
 
         {platforms.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              flexWrap: 'wrap',
+              padding: '8px 10px',
+              marginBottom: 8,
+              background: 'var(--surface2)',
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          >
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={allPagedSelected}
+                ref={el => {
+                  if (el) el.indeterminate = !allPagedSelected && somePagedSelected
+                }}
+                onChange={togglePage}
+              />
+              <span style={{ color: 'var(--text2)' }}>
+                {selected.size > 0
+                  ? `${selected.size} sélectionnée(s)`
+                  : 'Tout sélectionner (page)'}
+              </span>
+            </label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-success"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                disabled={selected.size === 0 || bulkBusy}
+                onClick={() => handleBulkToggle(true)}
+              >
+                <CheckIcon style={ICON_INLINE} /> Activer sélection
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ fontSize: 11, padding: '4px 10px' }}
+                disabled={selected.size === 0 || bulkBusy}
+                onClick={() => handleBulkToggle(false)}
+              >
+                <XMarkIcon style={ICON_INLINE} /> Désactiver sélection
+              </button>
+              {selected.size > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ fontSize: 11, padding: '4px 10px' }}
+                  onClick={() => setSelected(new Set())}
+                  disabled={bulkBusy}
+                >
+                  Réinitialiser
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {platforms.length > 0 && (
           <div className="platform-list">
-            {platforms.map(p => {
+            {paged.map(p => {
               const s = stats[p.id]
               const isStatsLoading = s === 'loading'
               const statsObj = s && s !== 'loading' && !('error' in s) ? (s as Stats) : null
               const statsErr = s && s !== 'loading' && 'error' in s ? s.error : null
+              const isChecked = selected.has(p.id)
               return (
                 <div
                   key={p.id}
                   className="platform-item"
-                  style={{ flexDirection: 'column', alignItems: 'stretch' }}
+                  style={{
+                    flexDirection: 'column',
+                    alignItems: 'stretch',
+                    opacity: p.isActive ? 1 : 0.7,
+                    borderLeft: p.isActive ? undefined : '3px solid var(--danger)',
+                  }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                    <div className="platform-info">
+                    <div className="platform-info" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleOne(p.id)}
+                        aria-label={`Sélectionner ${p.name}`}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <span className="platform-name">{p.name}</span>
                         <span className="badge badge-neutral">Moodle {p.version}.x</span>
+                        {p.isActive ? (
+                          <span className="badge badge-success">
+                            <CheckIcon style={ICON_INLINE} /> Active
+                          </span>
+                        ) : (
+                          <span className="badge badge-danger">
+                            <XMarkIcon style={ICON_INLINE} /> Désactivée
+                          </span>
+                        )}
                         {testing[p.id] && testing[p.id] !== 'loading' && (() => {
                           const t = testing[p.id] as { ok: boolean; sitename?: string; release?: string; latencyMs?: number; error?: string }
                           return t.ok ? (
                             <span className="badge badge-success">
-                              ✓ {t.sitename || 'OK'} {t.release ? `(${t.release})` : ''} · {t.latencyMs}ms
+                              <CheckIcon style={ICON_INLINE} /> {t.sitename || 'OK'} {t.release ? `(${t.release})` : ''} · {t.latencyMs}ms
                             </span>
                           ) : (
-                            <span className="badge badge-danger">✗ {String(t.error).slice(0, 80)}</span>
+                            <span className="badge badge-danger">
+                              <XMarkIcon style={ICON_INLINE} /> {String(t.error).slice(0, 80)}
+                            </span>
                           )
                         })()}
                       </div>
                       <span className="platform-url">{p.url}</span>
+                      </div>
                     </div>
                     <div className="platform-actions">
                       <button
@@ -181,6 +365,36 @@ export function PlatformsSection({ initial }: Props) {
                       >
                         {isStatsLoading ? '…' : 'Détails'}
                       </button>
+                      <Link
+                        href={`/plateformes/${p.id}`}
+                        className="btn btn-secondary"
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                        title="Explorer l'arbre catégoriel de cette plateforme (filière → niveau → UE → cours)"
+                      >
+                        Explorer
+                      </Link>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                        onClick={() => handleClearCache(p.id, p.name)}
+                        title="Vider le cache Redis des appels Moodle Web Services pour cette plateforme"
+                      >
+                        Vider cache
+                      </button>
+                      <button
+                        type="button"
+                        className={`btn ${p.isActive ? 'btn-secondary' : 'btn-success'}`}
+                        style={{ fontSize: 12, padding: '4px 10px' }}
+                        onClick={() => handleToggleActive(p)}
+                        title={
+                          p.isActive
+                            ? 'Cacher cette plateforme aux non-admins (audits + cours associés masqués)'
+                            : 'Réactiver cette plateforme pour tous les utilisateurs'
+                        }
+                      >
+                        {p.isActive ? 'Désactiver' : 'Activer'}
+                      </button>
                       <button
                         type="button"
                         className="btn btn-danger"
@@ -199,7 +413,9 @@ export function PlatformsSection({ initial }: Props) {
                         </div>
                       )}
                       {statsErr && (
-                        <div style={{ fontSize: 12, color: 'var(--danger)' }}>✗ {statsErr}</div>
+                        <div style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <XMarkIcon style={{ width: 13, height: 13 }} /> {statsErr}
+                        </div>
                       )}
                       {statsObj && (
                         <>
@@ -248,6 +464,18 @@ export function PlatformsSection({ initial }: Props) {
                 </div>
               )
             })}
+          </div>
+        )}
+
+        {platforms.length > 0 && (
+          <div style={{ marginTop: 12, marginBottom: 16, marginLeft: -20, marginRight: -20 }}>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={platforms.length}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
           </div>
         )}
 
@@ -517,9 +745,10 @@ function UsersInfoBox({ stats }: { stats: Stats }) {
           </span>
         )}
         {partial && (
-          <span style={{ color: 'var(--warn)', fontSize: 11 }} title="Calcul partiel">
-            ⚠
-          </span>
+          <ExclamationTriangleIcon
+            style={{ width: 13, height: 13, color: 'var(--warn)' }}
+            aria-label="Calcul partiel"
+          />
         )}
       </div>
       {sortedBreakdown.length > 0 && (

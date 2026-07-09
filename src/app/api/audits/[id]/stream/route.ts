@@ -2,9 +2,9 @@ import { NextRequest } from 'next/server'
 import IORedis from 'ioredis'
 import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
+import { checkAuditAccess } from '@/lib/audit-access'
 import { SSE_CHANNEL } from '@/lib/queue'
 import { logger } from '@/lib/logger'
-import { canViewAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -16,14 +16,14 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   if (!a.ok) return a.response
   const { id } = await ctx.params
 
+  const access = await checkAuditAccess(id, a.user)
+  if (!access.ok) return access.response
+
   const session = await prisma.auditSession.findUnique({
     where: { id },
-    select: { userId: true, status: true, doneCourses: true, failedCourses: true, totalCourses: true },
+    select: { status: true, doneCourses: true, failedCourses: true, totalCourses: true },
   })
   if (!session) return new Response('Audit introuvable', { status: 404 })
-  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
-    return new Response('Accès refusé', { status: 403 })
-  }
 
   const redisUrl = process.env.REDIS_URL
   if (!redisUrl) return new Response('REDIS_URL manquant', { status: 503 })

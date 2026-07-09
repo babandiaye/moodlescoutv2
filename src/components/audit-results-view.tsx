@@ -1,6 +1,17 @@
 'use client'
 
+import Link from 'next/link'
 import { useMemo, useState } from 'react'
+import {
+  ExclamationTriangleIcon,
+  CheckIcon,
+  XMarkIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  ArrowTopRightOnSquareIcon,
+} from '@heroicons/react/24/outline'
+
+const ICON_INLINE = { width: 12, height: 12, verticalAlign: '-2px', display: 'inline-block' as const }
 
 type Course = Record<string, any>
 
@@ -19,7 +30,7 @@ function scoreClass(s: number) {
 }
 
 export function AuditResultsView({
-  sessionId: _sessionId,
+  sessionId,
   totalCourses,
   doneCourses,
   failedCourses,
@@ -27,7 +38,6 @@ export function AuditResultsView({
   errors,
   isPartial = false,
 }: Props) {
-  void _sessionId
   const [search, setSearch] = useState('')
   const [filterCategory, setFilterCategory] = useState<string>('all')
   const [filterTeacher, setFilterTeacher] = useState<string>('all')
@@ -119,7 +129,13 @@ export function AuditResultsView({
 
   const SortTh = ({ col, children }: { col: string; children: React.ReactNode }) => (
     <th onClick={() => toggleSort(col)} style={{ cursor: 'pointer', userSelect: 'none' }}>
-      {children} {sortBy === col ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+      {children}{' '}
+      {sortBy === col &&
+        (sortDir === 'asc' ? (
+          <ChevronUpIcon style={ICON_INLINE} />
+        ) : (
+          <ChevronDownIcon style={ICON_INLINE} />
+        ))}
     </th>
   )
 
@@ -190,7 +206,7 @@ export function AuditResultsView({
         <div className="card">
           <div className="card-header">
             <span className="card-title">
-              <span className="card-icon">⚠</span> Échecs ({failedCourses})
+              <ExclamationTriangleIcon className="card-icon" /> Échecs ({failedCourses})
             </span>
           </div>
           <div className="card-body">
@@ -247,6 +263,7 @@ export function AuditResultsView({
                     niveau={niveau}
                     isExp={isExp}
                     onToggle={() => setExpanded(isExp ? null : i)}
+                    sessionId={sessionId}
                   />
                 )
               })}
@@ -280,12 +297,14 @@ function CourseRow({
   niveau,
   isExp,
   onToggle,
+  sessionId,
 }: {
   course: Course
   score: number
   niveau: string
   isExp: boolean
   onToggle: () => void
+  sessionId?: string
 }) {
   return (
     <>
@@ -317,7 +336,7 @@ function CourseRow({
                   : 'Données partielles'
               }
             >
-              ⚠ partiel
+              <ExclamationTriangleIcon style={ICON_INLINE} /> partiel
             </span>
           )}
         </td>
@@ -405,14 +424,27 @@ function CourseRow({
           <div className={`score-circle ${scoreClass(score)}`}>{score}</div>
         </td>
         <td>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ fontSize: 11, padding: '4px 10px' }}
-            onClick={onToggle}
-          >
-            {isExp ? '▲' : '▼'}
-          </button>
+          <div style={{ display: 'inline-flex', gap: 4 }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ fontSize: 11, padding: '4px 8px' }}
+              onClick={onToggle}
+              title={isExp ? 'Refermer' : 'Aperçu rapide'}
+            >
+              {isExp ? <ChevronUpIcon style={{ width: 14, height: 14 }} /> : <ChevronDownIcon style={{ width: 14, height: 14 }} />}
+            </button>
+            {sessionId && r.course_id && (
+              <Link
+                href={`/audits/${sessionId}/cours/${r.course_id}`}
+                className="btn btn-secondary"
+                style={{ fontSize: 11, padding: '4px 8px' }}
+                title="Voir en pleine page"
+              >
+                <ArrowTopRightOnSquareIcon style={{ width: 14, height: 14 }} />
+              </Link>
+            )}
+          </div>
         </td>
       </tr>
       {isExp && (
@@ -541,8 +573,8 @@ function CourseDetail({ course: c }: { course: Course }) {
                     key={key}
                     style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}
                   >
-                    <span style={{ color: val ? 'var(--success)' : 'var(--danger)' }}>
-                      {val ? '✓' : '✗'}
+                    <span style={{ color: val ? 'var(--success)' : 'var(--danger)', display: 'inline-flex' }}>
+                      {val ? <CheckIcon style={{ width: 13, height: 13 }} /> : <XMarkIcon style={{ width: 13, height: 13 }} />}
                     </span>
                     <span style={{ color: 'var(--text2)' }}>{labelOfCheck(key)}</span>
                   </div>
@@ -559,7 +591,7 @@ function CourseDetail({ course: c }: { course: Course }) {
               <ul style={{ paddingLeft: 16, fontSize: 12 }}>
                 {(c.ai.points_forts as string[]).map((p, i) => (
                   <li key={i} style={{ color: 'var(--text2)' }}>
-                    ✓ {p}
+                    <CheckIcon style={{ ...ICON_INLINE, color: 'var(--success)' }} /> {p}
                   </li>
                 ))}
               </ul>
@@ -571,7 +603,7 @@ function CourseDetail({ course: c }: { course: Course }) {
               <ul style={{ paddingLeft: 16, fontSize: 12 }}>
                 {(c.ai.points_faibles as string[]).map((p, i) => (
                   <li key={i} style={{ color: 'var(--text2)' }}>
-                    ✗ {p}
+                    <XMarkIcon style={{ ...ICON_INLINE, color: 'var(--danger)' }} /> {p}
                   </li>
                 ))}
               </ul>
@@ -611,7 +643,7 @@ function CourseDetail({ course: c }: { course: Course }) {
                   borderRadius: 99,
                 }}
               >
-                ⚠ Cours orphelin
+                <ExclamationTriangleIcon style={ICON_INLINE} /> Cours orphelin
               </span>
             )}
           </h4>

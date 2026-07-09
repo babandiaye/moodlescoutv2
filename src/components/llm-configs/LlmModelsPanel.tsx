@@ -1,5 +1,6 @@
 'use client'
 
+import { XMarkIcon, CheckBadgeIcon } from '@heroicons/react/24/outline'
 import type { ModelsState } from './types'
 
 type Props = {
@@ -26,7 +27,9 @@ export function LlmModelsPanel({ state, configuredModel }: Props) {
       }}
     >
       {state.error && (
-        <div style={{ fontSize: 12, color: 'var(--danger)' }}>✗ {state.error}</div>
+        <div style={{ fontSize: 12, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <XMarkIcon style={{ width: 14, height: 14 }} /> {state.error}
+        </div>
       )}
       {state.list && (
         <>
@@ -49,7 +52,9 @@ export function LlmModelsPanel({ state, configuredModel }: Props) {
                 style={{ fontFamily: 'var(--mono)', fontSize: 10 }}
               >
                 {name}
-                {name === configuredModel && ' ★'}
+                {name === configuredModel && (
+                  <CheckBadgeIcon style={{ width: 12, height: 12, marginLeft: 4, verticalAlign: '-2px' }} />
+                )}
               </span>
             ))}
           </div>

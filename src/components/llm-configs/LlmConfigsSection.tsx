@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { CpuChipIcon } from '@heroicons/react/24/outline'
 import { LlmConfigCreateForm } from './LlmConfigCreateForm'
 import { LlmConfigRow } from './LlmConfigRow'
 import type { LlmConfig } from './types'
@@ -47,7 +48,7 @@ export function LlmConfigsSection({ initial }: Props) {
     <div className="card">
       <div className="card-header">
         <span className="card-title">
-          <span className="card-icon">🤖</span> Fournisseurs IA
+          <CpuChipIcon className="card-icon" /> Fournisseurs IA
         </span>
         <span className="badge badge-info">{configs.length} config(s)</span>
       </div>

@@ -202,6 +202,42 @@ export type LlmRunOpts = {
   images: Buffer[]
 }
 
+/**
+ * Détecte si un résultat est le FALLBACK silencieux de parseAiResponse
+ * (réponse vide, JSON invalide, ou réponse tronquée). On retry sur ce cas
+ * car Ollama tombe parfois sur du JSON malformé quand la sortie est
+ * tronquée à la limite du contexte — un 2e essai passe souvent.
+ */
+function isFallbackResult(r: AuditAiResult): boolean {
+  return r.description_courte === 'Analyse indisponible' && (r.score_global ?? 0) === 0
+}
+
+/**
+ * Un seul appel LLM + parse, sans retry ni sémaphore. Séparé pour permettre
+ * une boucle de retry claire côté runLlm.
+ */
+async function runLlmOnce(opts: LlmRunOpts): Promise<AuditAiResult> {
+  if (opts.provider === 'anthropic') {
+    if (!opts.apiKey) throw new Error('Clé Anthropic manquante')
+    const raw = await callAnthropic({
+      apiKey: opts.apiKey,
+      model: opts.model,
+      content: opts.content,
+      images: opts.images,
+    })
+    return parseAiResponse(raw)
+  }
+  if (!opts.apiUrl) throw new Error('URL Ollama manquante')
+  const raw = await callOllama({
+    apiUrl: opts.apiUrl,
+    apiKey: opts.apiKey ?? undefined,
+    model: opts.model,
+    content: opts.content,
+    images: opts.images,
+  })
+  return parseAiResponse(raw)
+}
+
 export async function runLlm(opts: LlmRunOpts): Promise<AuditAiResult> {
   // Sémaphore : protège un Ollama mono-GPU contre les inférences concurrentes
   // qui satureraient la VRAM. Pour Anthropic (API cloud), on peut monter plus haut.
@@ -209,37 +245,36 @@ export async function runLlm(opts: LlmRunOpts): Promise<AuditAiResult> {
     process.env.LLM_MAX_CONCURRENT ?? (opts.provider === 'anthropic' ? 5 : 1),
   )
   const label = `${opts.provider}:${opts.model}`
+  // 2 tentatives max : la 2e couvre les cas de JSON tronqué / timeout
+  // transitoire côté Ollama. Au-delà on ne gagne plus grand-chose et on
+  // fait exploser la durée totale.
+  const MAX_ATTEMPTS = 2
 
-  try {
-    const raw = await withLlmSlot(
-      max,
-      async () => {
-        if (opts.provider === 'anthropic') {
-          if (!opts.apiKey) throw new Error('Clé Anthropic manquante')
-          return callAnthropic({
-            apiKey: opts.apiKey,
-            model: opts.model,
-            content: opts.content,
-            images: opts.images,
-          })
-        }
-        if (!opts.apiUrl) throw new Error('URL Ollama manquante')
-        return callOllama({
-          apiUrl: opts.apiUrl,
-          apiKey: opts.apiKey ?? undefined,
-          model: opts.model,
-          content: opts.content,
-          images: opts.images,
-        })
-      },
-      { label, timeoutMs: 600_000 },
-    )
-    return parseAiResponse(raw)
-  } catch (err) {
-    const msg = (err as Error).message
-    return {
-      ...FALLBACK,
-      description_courte: `Erreur IA: ${msg.slice(0, 80)}`,
+  let lastErr: Error | null = null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await withLlmSlot(
+        max,
+        () => runLlmOnce(opts),
+        { label, timeoutMs: 600_000 },
+      )
+      if (isFallbackResult(result) && attempt < MAX_ATTEMPTS) {
+        // Réponse vide/malformée : on retry. On ne retry pas si c'est déjà
+        // la dernière tentative — on retourne le fallback tel quel.
+        continue
+      }
+      return result
+    } catch (err) {
+      lastErr = err as Error
+      if (attempt >= MAX_ATTEMPTS) break
+      // Backoff court entre les tentatives (Ollama a besoin de souffler si
+      // la 1re requête l'a saturé).
+      await new Promise(r => setTimeout(r, 500))
     }
+  }
+  const msg = lastErr?.message ?? 'échec inconnu'
+  return {
+    ...FALLBACK,
+    description_courte: `Erreur IA: ${msg.slice(0, 80)}`,
   }
 }

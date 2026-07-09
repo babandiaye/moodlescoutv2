@@ -30,6 +30,7 @@ export async function GET() {
       apiUrl: true,
       model: true,
       isDefault: true,
+      isActive: true,
       createdAt: true,
     },
   })
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
         apiUrl: true,
         model: true,
         isDefault: true,
+        isActive: true,
         createdAt: true,
       },
     })

@@ -1,9 +1,9 @@
 import { NextRequest } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
-import { exportToExcel, exportToPdf } from '@/lib/exports'
+import { checkAuditAccess } from '@/lib/audit-access'
+import { exportToCsv, exportToExcel, exportToPdf } from '@/lib/exports'
 import { logger } from '@/lib/logger'
-import { canViewAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -32,14 +32,16 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
   const url = new URL(req.url)
   const format = (url.searchParams.get('format') ?? 'excel').toLowerCase()
-  if (format !== 'excel' && format !== 'pdf') {
-    return new Response('Format invalide (excel|pdf)', { status: 400 })
+  if (format !== 'excel' && format !== 'pdf' && format !== 'csv') {
+    return new Response('Format invalide (excel|pdf|csv)', { status: 400 })
   }
+
+  const access = await checkAuditAccess(id, a.user)
+  if (!access.ok) return access.response
 
   const session = await prisma.auditSession.findUnique({
     where: { id },
     select: {
-      userId: true,
       sessionKey: true,
       platform: { select: { name: true } },
       courseAudits: {
@@ -50,9 +52,6 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     },
   })
   if (!session) return new Response('Introuvable', { status: 404 })
-  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
-    return new Response('Accès refusé', { status: 403 })
-  }
 
   const courses = session.courseAudits
     .map((c: { resultJson: unknown }) => c.resultJson)
@@ -64,7 +63,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
   const slug = slugifyName(session.platform.name)
   const ts = formatTimestamp(new Date())
-  const ext = format === 'excel' ? 'xlsx' : 'pdf'
+  const ext = format === 'excel' ? 'xlsx' : format
   const filename = `${slug}-${ts}.${ext}`
 
   try {
@@ -74,6 +73,16 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         headers: {
           'Content-Type':
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': String(buf.length),
+        },
+      })
+    }
+    if (format === 'csv') {
+      const buf = exportToCsv(courses)
+      return new Response(buf as any, {
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
           'Content-Disposition': `attachment; filename="${filename}"`,
           'Content-Length': String(buf.length),
         },

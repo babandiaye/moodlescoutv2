@@ -1,6 +1,9 @@
 'use client'
 
+import { CheckIcon, XMarkIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
 import type { TestResult } from './types'
+
+const ICON_INLINE = { width: 12, height: 12, verticalAlign: '-2px', display: 'inline-block' as const }
 
 type Props = { result: TestResult | undefined }
 
@@ -16,15 +19,19 @@ export function LlmTestBadge({ result }: Props) {
   if (result.ok) {
     return (
       <span className="badge badge-success">
-        ✓ joignable · {result.modelsCount ?? '?'} modèles · {result.latencyMs}ms
+        <CheckIcon style={ICON_INLINE} /> joignable · {result.modelsCount ?? '?'} modèles · {result.latencyMs}ms
         {result.configuredModelAvailable === false && (
           <span style={{ marginLeft: 6, color: 'var(--warn)' }}>
-            · ⚠ {result.configuredModel} absent
+            · <ExclamationTriangleIcon style={ICON_INLINE} /> {result.configuredModel} absent
           </span>
         )}
       </span>
     )
   }
 
-  return <span className="badge badge-danger">✗ {String(result.error).slice(0, 80)}</span>
+  return (
+    <span className="badge badge-danger">
+      <XMarkIcon style={ICON_INLINE} /> {String(result.error).slice(0, 80)}
+    </span>
+  )
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { statusBadgeClass, statusLabel } from '@/lib/audit-status'
 
 type LogType = 'info' | 'platform' | 'analyzing' | 'success' | 'done' | 'error' | 'warn'
 type LogLine = { ts: number; type: LogType; msg: string }
@@ -13,6 +14,29 @@ type Props = {
     done: number
     failed: number
     total: number
+  }
+}
+
+/**
+ * Notification browser côté client. Silencieuse si le user n'a pas encore
+ * autorisé, refusé, ou si l'onglet est actif (inutile de notifier ce que
+ * l'utilisateur regarde déjà en direct).
+ */
+function notifyEnd(status: string, done: number, failed: number, total: number) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+  if (document.visibilityState === 'visible' && document.hasFocus()) return
+  const title = status === 'completed'
+    ? 'Audit terminé'
+    : status === 'failed'
+      ? 'Audit en échec'
+      : 'Audit annulé'
+  const body = `${done}/${total} cours traités${failed > 0 ? ` · ${failed} échec(s)` : ''}`
+  try {
+    const n = new Notification(title, { body, tag: 'moodlescout-audit', silent: false })
+    setTimeout(() => n.close(), 8000)
+  } catch {
+    // Certains browsers refusent Notification() dans un contexte non-secure : ignore.
   }
 }
 
@@ -31,6 +55,22 @@ export function AuditLiveView({ sessionId, initial }: Props) {
   const logsRef = useRef<HTMLDivElement>(null)
   const lastLogged = useRef<{ done: number; failed: number }>({ done: -1, failed: -1 })
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [notifPerm, setNotifPerm] = useState<'default' | 'granted' | 'denied' | 'unsupported'>('default')
+
+  // Demande de permission automatique — silencieuse : si l'utilisateur refuse
+  // ou ignore, on ne redemande pas. On expose juste un mini-lien "Activer les
+  // notifications" plus bas s'il change d'avis.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setNotifPerm('unsupported')
+      return
+    }
+    if (Notification.permission === 'default') {
+      Notification.requestPermission().then(p => setNotifPerm(p)).catch(() => {})
+    } else {
+      setNotifPerm(Notification.permission)
+    }
+  }, [])
 
   // Rafraîchit les données serveur (résultats partiels) avec un debounce
   // pour éviter un re-render à chaque cours quand l'audit est rapide.
@@ -101,6 +141,12 @@ export function AuditLiveView({ sessionId, initial }: Props) {
         if (data.status === 'completed') pushLog('done', 'Audit terminé')
         if (data.status === 'failed') pushLog('error', 'Audit en échec')
         if (data.status === 'cancelled') pushLog('warn', 'Audit annulé')
+        if (['completed', 'failed', 'cancelled'].includes(data.status)) {
+          setProgress(p => {
+            notifyEnd(data.status, p.done, p.failed, p.total)
+            return p
+          })
+        }
       } catch {
         // ignore
       }
@@ -161,8 +207,35 @@ export function AuditLiveView({ sessionId, initial }: Props) {
             </div>
           )}
         </div>
-        <div style={{ fontSize: 13, color: 'var(--text2)' }}>
-          Statut : <strong style={{ color: 'var(--text)' }}>{status}</strong>
+        <div style={{ fontSize: 13, color: 'var(--text2)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          Statut : <span className={`badge ${statusBadgeClass(status)}`}>{statusLabel(status)}</span>
+          {notifPerm === 'default' && (
+            <button
+              type="button"
+              onClick={() =>
+                Notification.requestPermission()
+                  .then(p => setNotifPerm(p))
+                  .catch(() => {})
+              }
+              style={{
+                fontSize: 11,
+                background: 'none',
+                border: '1px solid var(--border2)',
+                borderRadius: 4,
+                padding: '2px 8px',
+                color: 'var(--text2)',
+                cursor: 'pointer',
+              }}
+              title="Recevoir une notification à la fin de l'audit, même si l'onglet est en arrière-plan"
+            >
+              🔔 Activer les notifications
+            </button>
+          )}
+          {notifPerm === 'granted' && (
+            <span style={{ fontSize: 11, color: 'var(--text3)' }} title="Vous serez notifié à la fin de l'audit">
+              🔔 notifications activées
+            </span>
+          )}
         </div>
       </div>
 

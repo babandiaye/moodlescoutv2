@@ -22,6 +22,16 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
   try {
     const token = decrypt(platform.tokenEnc)
     const info = await getSiteInfo(platform.url, token)
+    // Trace la dernière vérification santé : utilisé plus tard pour un
+    // indicateur "vu il y a X min" sans re-taper Moodle à chaque affichage.
+    await prisma.moodlePlatform.update({
+      where: { id },
+      data: {
+        lastCheckAt: new Date(),
+        siteName: info.sitename ?? platform.siteName,
+        release: info.release ?? platform.release,
+      },
+    })
     return NextResponse.json({
       ok: true,
       latencyMs: Date.now() - start,

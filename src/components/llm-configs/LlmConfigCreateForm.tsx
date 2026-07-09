@@ -102,14 +102,14 @@ export function LlmConfigCreateForm({
           className={`provider-card ${form.provider === 'ollama' ? 'active' : ''}`}
           onClick={() => handleProviderChange('ollama')}
         >
-          <div className="provider-card-title">⬡ Ollama</div>
+          <div className="provider-card-title">Ollama</div>
           <div className="provider-card-sub">Souverain — Bearer auth</div>
         </div>
         <div
           className={`provider-card ${form.provider === 'anthropic' ? 'active' : ''}`}
           onClick={() => handleProviderChange('anthropic')}
         >
-          <div className="provider-card-title">✦ Anthropic Claude</div>
+          <div className="provider-card-title">Anthropic Claude</div>
           <div className="provider-card-sub">Cloud — API key requise</div>
         </div>
       </div>

@@ -126,6 +126,11 @@ model AuditSession {
   quizDetail     QuizDetail  @default(both) @map("quiz_detail")
   // Filtre éventuel par catégories Moodle (array de strings)
   categoriesJson Json?       @map("categories_json")
+  // Sous-ensemble d'IDs de cours à auditer (int[]). Null = tous les cours de
+  // la plateforme (comportement historique). Utilisé pour l'audit ciblé
+  // depuis /me/courses : on ne veut pas re-scanner 300 cours quand
+  // l'enseignant n'en a que 5.
+  courseIdsJson  Json?       @map("course_ids_json")
 
   startedAt      DateTime?   @map("started_at")
   finishedAt     DateTime?   @map("finished_at")

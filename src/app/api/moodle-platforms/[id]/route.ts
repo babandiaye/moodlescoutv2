@@ -14,6 +14,7 @@ const updateSchema = z.object({
   url: z.string().url().optional(),
   token: z.string().min(10).optional(),
   version: z.string().optional(),
+  isActive: z.boolean().optional(),
 })
 
 type Ctx = { params: Promise<{ id: string }> }
@@ -52,6 +53,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (parsed.data.name !== undefined) data.name = parsed.data.name
   if (parsed.data.version !== undefined) data.version = parsed.data.version
   if (parsed.data.url !== undefined) data.url = parsed.data.url
+  if (parsed.data.isActive !== undefined) data.isActive = parsed.data.isActive
 
   // Si on touche au token ou à l'URL, on revalide
   if (parsed.data.token !== undefined || parsed.data.url !== undefined) {
@@ -74,9 +76,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const platform = await prisma.moodlePlatform.update({
     where: { id },
     data,
-    select: { id: true, name: true, url: true, version: true, updatedAt: true },
+    select: { id: true, name: true, url: true, version: true, isActive: true, updatedAt: true },
   })
-  logger.info({ id }, 'Plateforme Moodle mise à jour')
+  logger.info({ id, isActive: data.isActive }, 'Plateforme Moodle mise à jour')
   return NextResponse.json({ platform })
 }
 

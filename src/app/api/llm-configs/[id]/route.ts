@@ -14,6 +14,7 @@ const updateSchema = z.object({
   apiKey: z.string().min(8).nullable().optional(),
   model: z.string().min(1).optional(),
   isDefault: z.boolean().optional(),
+  isActive: z.boolean().optional(),
 })
 
 type Ctx = { params: Promise<{ id: string }> }
@@ -36,6 +37,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (parsed.data.name !== undefined) data.name = parsed.data.name
   if (parsed.data.apiUrl !== undefined) data.apiUrl = parsed.data.apiUrl
   if (parsed.data.model !== undefined) data.model = parsed.data.model
+  if (parsed.data.isActive !== undefined) data.isActive = parsed.data.isActive
   if (parsed.data.apiKey !== undefined) {
     data.apiKeyEnc = parsed.data.apiKey ? encrypt(parsed.data.apiKey) : null
   }
@@ -60,6 +62,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
         apiUrl: true,
         model: true,
         isDefault: true,
+        isActive: true,
         updatedAt: true,
       },
     })

@@ -1,7 +1,32 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import {
+  AcademicCapIcon,
+  CpuChipIcon,
+  Cog6ToothIcon,
+  PlayIcon,
+  ExclamationTriangleIcon,
+  NoSymbolIcon,
+  ClockIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  ArrowPathIcon,
+  ShieldCheckIcon,
+  FolderIcon,
+} from '@heroicons/react/24/outline'
+import { CategoryPickerPanel } from './category-picker-panel'
+
+const ICON_INLINE = { width: 14, height: 14, verticalAlign: '-3px', display: 'inline-block' as const }
+
+type PreflightCheck = { ok: boolean; latencyMs: number; message: string }
+type PreflightState = {
+  status: 'idle' | 'running' | 'done' | 'error'
+  ok: boolean
+  checks?: { platform: PreflightCheck; llm: PreflightCheck; model: PreflightCheck }
+  error?: string
+}
 
 type Platform = { id: string; name: string; url: string; version: string }
 type LlmConfig = { id: string; name: string; provider: string; model: string; isDefault: boolean }
@@ -19,6 +44,12 @@ type QuotaInfo = {
 type Props = {
   platforms: Platform[]
   llmConfigs: LlmConfig[]
+  /** Plateforme pré-sélectionnée (venant de /me/courses via ?platform=). */
+  preselectedPlatformId?: string | null
+  /** Sous-ensemble de courseIds Moodle à auditer (venant de /me/courses). */
+  preselectedCourseIds?: number[]
+  /** Catégories pré-sélectionnées (venant de /plateformes/[id] via ?categories=). */
+  preselectedCategories?: string[]
 }
 
 function formatMmSs(sec: number): string {
@@ -28,18 +59,52 @@ function formatMmSs(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-export function NewAuditForm({ platforms, llmConfigs }: Props) {
+export function NewAuditForm({
+  platforms,
+  llmConfigs,
+  preselectedPlatformId,
+  preselectedCourseIds,
+  preselectedCategories,
+}: Props) {
   const router = useRouter()
   const defaultLlm = llmConfigs.find(c => c.isDefault) ?? llmConfigs[0]
+  // Si /me/courses a pré-sélectionné une plateforme valide, on l'utilise.
+  const initialPlatform =
+    preselectedPlatformId && platforms.some(p => p.id === preselectedPlatformId)
+      ? preselectedPlatformId
+      : platforms[0]?.id ?? ''
   const [form, setForm] = useState({
-    platformId: platforms[0]?.id ?? '',
+    platformId: initialPlatform,
     llmConfigId: defaultLlm?.id ?? '',
     extractImages: true,
     quizDetail: 'both' as 'meta' | 'detail' | 'both',
-    categoriesText: '',
+    categoriesText: (preselectedCategories ?? []).join(', '),
   })
+  // Panneau catégoriel (Explorateur intégré) : ouvert par défaut si une
+  // catégorie a été présélectionnée depuis /plateformes/[id].
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(
+    (preselectedCategories?.length ?? 0) > 0,
+  )
+  // Mapping du texte séparé virgule → Set de noms. Recalculé à chaque frappe
+  // pour que le picker reflète bien ce qui est effectivement dans le champ.
+  const selectedCategoryNames = useMemo(() => {
+    return new Set(
+      (form.categoriesText ?? '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean),
+    )
+  }, [form.categoriesText])
+  // Sous-ensemble d'IDs de cours à auditer (feature "Auditer mes cours").
+  // Vide = comportement historique (tous les cours de la plateforme).
+  const courseIds = preselectedCourseIds ?? []
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Pre-flight : plateforme joignable + LLM/modèle prêt. Bloque le lancement
+  // si un check échoue — évite de créer un audit qui va crasher à la 1re
+  // requête Moodle ou attendre 10 min avant de découvrir qu'Ollama est down.
+  const [preflight, setPreflight] = useState<PreflightState>({ status: 'idle', ok: false })
 
   // Quota rate limit (lecture seule pour avertir avant le clic)
   const [quota, setQuota] = useState<QuotaInfo | null>(null)
@@ -61,6 +126,51 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
   useEffect(() => {
     loadQuota()
   }, [])
+
+  // Pre-flight : re-run 500 ms après tout changement plateforme/LLM.
+  // Debounce évite de spammer les WS pendant qu'on clique dans le formulaire.
+  useEffect(() => {
+    if (!form.platformId || !form.llmConfigId) return
+    setPreflight({ status: 'running', ok: false })
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/audits/preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ platformId: form.platformId, llmConfigId: form.llmConfigId }),
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          setPreflight({ status: 'error', ok: false, error: data.error ?? `HTTP ${res.status}` })
+          return
+        }
+        setPreflight({ status: 'done', ok: data.ok, checks: data.checks })
+      } catch (err) {
+        setPreflight({ status: 'error', ok: false, error: (err as Error).message })
+      }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [form.platformId, form.llmConfigId])
+
+  const runPreflight = async () => {
+    if (!form.platformId || !form.llmConfigId) return
+    setPreflight({ status: 'running', ok: false })
+    try {
+      const res = await fetch('/api/audits/preflight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platformId: form.platformId, llmConfigId: form.llmConfigId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setPreflight({ status: 'error', ok: false, error: data.error ?? `HTTP ${res.status}` })
+        return
+      }
+      setPreflight({ status: 'done', ok: data.ok, checks: data.checks })
+    } catch (err) {
+      setPreflight({ status: 'error', ok: false, error: (err as Error).message })
+    }
+  }
 
   // Compteur live qui décrémente chaque seconde quand on est bloqué
   useEffect(() => {
@@ -99,6 +209,7 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
           extractImages: form.extractImages,
           quizDetail: form.quizDetail,
           categories,
+          courseIds: courseIds.length > 0 ? courseIds : undefined,
         }),
       })
       const data = await res.json()
@@ -119,10 +230,25 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
   return (
     <div className="flex-col-20">
       <form onSubmit={handleSubmit} className="flex-col-20">
+        {courseIds.length > 0 && (
+          <div
+            style={{
+              padding: '12px 16px',
+              background: 'var(--info-light, #E8F4FD)',
+              border: '1px solid var(--brand)',
+              borderRadius: 'var(--radius)',
+              fontSize: 13,
+              color: 'var(--text)',
+            }}
+          >
+            <strong>Audit ciblé :</strong> {courseIds.length} cours pré-sélectionné(s) depuis « Mes cours ».
+            L&apos;audit ne traitera que ces cours (au lieu de toute la plateforme).
+          </div>
+        )}
         <div className="card">
           <div className="card-header">
             <span className="card-title">
-              <span className="card-icon">🎓</span> Plateforme Moodle
+              <AcademicCapIcon className="card-icon" /> Plateforme Moodle
             </span>
           </div>
           <div className="card-body">
@@ -159,7 +285,7 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
         <div className="card">
           <div className="card-header">
             <span className="card-title">
-              <span className="card-icon">🤖</span> Configuration LLM
+              <CpuChipIcon className="card-icon" /> Configuration LLM
             </span>
           </div>
           <div className="card-body">
@@ -182,7 +308,7 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
         <div className="card">
           <div className="card-header">
             <span className="card-title">
-              <span className="card-icon">⚙</span> Options d&apos;audit
+              <Cog6ToothIcon className="card-icon" /> Options d&apos;audit
             </span>
           </div>
           <div className="card-body">
@@ -221,7 +347,20 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
                 </label>
               </div>
               <div className="form-group full">
-                <label className="form-label">Filtre catégories (optionnel)</label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                  <label className="form-label" style={{ marginBottom: 0 }}>Filtre catégories (optionnel)</label>
+                  {form.platformId && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ fontSize: 11, padding: '4px 10px' }}
+                      onClick={() => setCategoryPickerOpen(o => !o)}
+                    >
+                      <FolderIcon style={{ width: 12, height: 12, verticalAlign: '-2px', display: 'inline-block' }} />{' '}
+                      {categoryPickerOpen ? 'Fermer l\'arbre' : 'Parcourir l\'arbre'}
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="ex: IDA, Licence 1, Master 2 (séparés par virgule)"
@@ -230,10 +369,69 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
                 />
                 <span className="form-hint">
                   Si vide : tous les cours visibles seront audités. Sinon, seuls les cours dont la
-                  hiérarchie contient une catégorie listée.
+                  hiérarchie contient une catégorie listée. Utilisez « Parcourir l&apos;arbre » pour
+                  sélectionner via la structure Moodle.
                 </span>
+                {categoryPickerOpen && form.platformId && (
+                  <CategoryPickerPanel
+                    platformId={form.platformId}
+                    selectedNames={selectedCategoryNames}
+                    onChange={names => {
+                      setForm(f => ({
+                        ...f,
+                        categoriesText: Array.from(names).join(', '),
+                      }))
+                    }}
+                  />
+                )}
               </div>
             </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title">
+              <ShieldCheckIcon className="card-icon" /> Vérification pré-audit
+            </span>
+            <button
+              type="button"
+              onClick={runPreflight}
+              disabled={preflight.status === 'running' || !form.platformId || !form.llmConfigId}
+              className="btn btn-secondary"
+              style={{ fontSize: 12, padding: '4px 10px' }}
+            >
+              <ArrowPathIcon
+                style={{
+                  width: 12,
+                  height: 12,
+                  animation: preflight.status === 'running' ? 'spin 1s linear infinite' : undefined,
+                }}
+              />{' '}
+              Relancer
+            </button>
+          </div>
+          <div className="card-body">
+            <PreflightRow
+              label="Plateforme Moodle"
+              status={preflight.status}
+              check={preflight.checks?.platform}
+            />
+            <PreflightRow
+              label="Serveur LLM"
+              status={preflight.status}
+              check={preflight.checks?.llm}
+            />
+            <PreflightRow
+              label="Modèle disponible"
+              status={preflight.status}
+              check={preflight.checks?.model}
+            />
+            {preflight.status === 'error' && (
+              <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>
+                Erreur du preflight : {preflight.error}
+              </div>
+            )}
           </div>
         </div>
 
@@ -244,8 +442,8 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
             className="error-banner"
             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
           >
-            <span>
-              ⛔{' '}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <NoSymbolIcon style={ICON_INLINE} />{' '}
               {quota.blockedKind === 'user'
                 ? `Vous avez atteint votre quota personnel (${quota.perUser.limit} audits / ${Math.round(
                     quota.perUser.windowSec / 60,
@@ -271,7 +469,7 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
               fontSize: 12,
             }}
           >
-            ⚠{' '}
+            <ExclamationTriangleIcon style={ICON_INLINE} />{' '}
             {quota.nearLimitKind === 'user'
               ? `Quota personnel : ${quota.perUser.used}/${quota.perUser.limit} audits utilisés sur la fenêtre de ${Math.round(
                   quota.perUser.windowSec / 60,
@@ -298,17 +496,86 @@ export function NewAuditForm({ platforms, llmConfigs }: Props) {
             <button
               type="submit"
               className="btn-launch"
-              disabled={submitting || isBlocked || !form.platformId || !form.llmConfigId}
+              disabled={
+                submitting ||
+                isBlocked ||
+                !form.platformId ||
+                !form.llmConfigId ||
+                !preflight.ok
+              }
+              title={!preflight.ok ? 'La vérification pré-audit doit passer avant le lancement.' : undefined}
             >
-              {submitting
-                ? 'Création…'
-                : isBlocked
-                  ? `⏳ ${formatMmSs(countdown)}`
-                  : "▶ Lancer l'audit"}
+              {submitting ? (
+                'Création…'
+              ) : isBlocked ? (
+                <>
+                  <ClockIcon style={ICON_INLINE} /> {formatMmSs(countdown)}
+                </>
+              ) : (
+                <>
+                  <PlayIcon style={ICON_INLINE} /> Lancer l&apos;audit
+                </>
+              )}
             </button>
           </div>
         </div>
       </form>
+    </div>
+  )
+}
+
+/**
+ * Ligne d'un check pre-flight : icône d'état + libellé + message.
+ * En state "idle" ou "running" on affiche un placeholder (spinner ou "…").
+ */
+function PreflightRow({
+  label,
+  status,
+  check,
+}: {
+  label: string
+  status: PreflightState['status']
+  check?: PreflightCheck
+}) {
+  const isRunning = status === 'running'
+  const done = status === 'done' && check
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '8px 0',
+        borderBottom: '1px solid var(--border)',
+        fontSize: 13,
+      }}
+    >
+      {isRunning ? (
+        <ArrowPathIcon
+          style={{ width: 16, height: 16, color: 'var(--text3)', animation: 'spin 1s linear infinite' }}
+        />
+      ) : done && check!.ok ? (
+        <CheckCircleIcon style={{ width: 16, height: 16, color: 'var(--success)' }} />
+      ) : done ? (
+        <XCircleIcon style={{ width: 16, height: 16, color: 'var(--danger)' }} />
+      ) : (
+        <ClockIcon style={{ width: 16, height: 16, color: 'var(--text3)' }} />
+      )}
+      <strong style={{ minWidth: 140 }}>{label}</strong>
+      <span style={{ color: done && !check!.ok ? 'var(--danger)' : 'var(--text2)', flex: 1 }}>
+        {isRunning
+          ? 'Vérification en cours…'
+          : done
+            ? check!.message
+            : status === 'error'
+              ? 'Non testé'
+              : 'En attente'}
+      </span>
+      {done && check!.latencyMs > 0 && (
+        <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
+          {check!.latencyMs}ms
+        </span>
+      )}
     </div>
   )
 }

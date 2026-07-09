@@ -139,8 +139,35 @@ code { font-family: var(--mono); }
   font-size: 13px; font-weight: 600; color: var(--text);
   display: flex; align-items: center; gap: 8px;
 }
-.card-icon { font-size: 15px; }
+.card-icon { width: 18px; height: 18px; color: var(--brand); flex-shrink: 0; }
 .card-body { padding: 20px; }
+
+/* ─── Animations utilitaires ─── */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ─── Pagination ─── */
+.pagination {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 12px 20px; border-top: 1px solid var(--border);
+  background: var(--bg-soft, #fafbfc); font-size: 12px; color: var(--text2);
+  flex-wrap: wrap;
+}
+.pagination-info { font-weight: 500; }
+.pagination-controls { display: flex; align-items: center; gap: 8px; }
+.pagination-size { display: inline-flex; align-items: center; gap: 6px; }
+.pagination-size select {
+  padding: 4px 8px; border: 1px solid var(--border2); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer;
+}
+.pagination-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: 1px solid var(--border2);
+  border-radius: var(--radius); background: var(--surface); color: var(--text2);
+  cursor: pointer; transition: all 0.15s;
+}
+.pagination-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.pagination-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.pagination-page { font-weight: 600; min-width: 56px; text-align: center; color: var(--text); }
 
 /* ─── Boutons ─── */
 .btn { padding: 8px 16px; border-radius: var(--radius); border: none;

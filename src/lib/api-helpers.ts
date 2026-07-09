@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { Session } from 'next-auth'
+import type { UserRole } from '@prisma/client'
 import { auth } from '@/lib/auth'
 import { redis } from '@/lib/redis'
 import { logger } from '@/lib/logger'
@@ -28,7 +29,7 @@ type AuthFailure = {
  *   // a.user.id, a.user.role, etc. disponibles
  */
 export async function requireAuth(
-  options: { role?: 'admin' | 'auditeur' } = {}
+  options: { role?: UserRole } = {}
 ): Promise<AuthSuccess | AuthFailure> {
   const session = await auth()
 

@@ -826,3 +826,127 @@ export function stripHtml(html: string | undefined | null): string {
   const $ = cheerio.load(html)
   return $.root().text().replace(/\s+/g, ' ').trim()
 }
+
+// ─── Cours d'un utilisateur (par email) ──────────────────────────────────
+//
+// Utilisé par la page /me/courses : pour chaque plateforme configurée, on
+// résout l'email Keycloak → userid Moodle, puis on liste ses cours.
+// On garde un cache court (5 min) : l'enrôlement bouge rarement à l'échelle
+// d'une session de travail, et ça évite de spammer les WS si l'utilisateur
+// rafraîchit la page.
+
+export type MoodleUserCourse = {
+  id: number
+  shortname: string
+  fullname: string
+  visible: number
+  enrolledusercount?: number
+  /** Rôles de l'utilisateur dans ce cours, si Moodle les renvoie. */
+  roles?: Array<{ roleid: number; shortname: string; name: string }>
+}
+
+const GET_USER_COURSES_TTL_SEC = 300
+
+/**
+ * Résout un email vers un userid Moodle via core_user_get_users_by_field.
+ * Retourne null si aucun compte ne porte cet email (cas fréquent : un Personnel
+ * UN-CHK qui n'a pas encore de compte sur cette plateforme Moodle particulière).
+ */
+export async function getMoodleUserIdByEmail(
+  baseUrl: string,
+  token: string,
+  email: string,
+): Promise<number | null> {
+  const normalized = email.trim().toLowerCase()
+  if (!normalized) return null
+  const users = await safeMoodleCall<Array<{ id: number; email?: string }>>(
+    baseUrl,
+    token,
+    'core_user_get_users_by_field',
+    { field: 'email', values: [normalized] },
+    [],
+  )
+  if (!Array.isArray(users) || users.length === 0) return null
+  // Moodle peut retourner plusieurs résultats si plusieurs comptes ont le même
+  // email (cas exotique). On prend le premier — c'est le plus ancien.
+  return users[0].id ?? null
+}
+
+export type UserCoursesResult = {
+  courses: MoodleUserCourse[]
+  /**
+   * true si Moodle a répondu par une exception `webservice_access_exception`.
+   * Cas typique : la fonction `core_enrol_get_users_courses` n'a pas été
+   * ajoutée au service Web externe côté admin Moodle. À afficher clairement
+   * à l'utilisateur — sinon il voit "0 cours" sans comprendre pourquoi.
+   */
+  accessDenied?: boolean
+  /** Message d'erreur brut Moodle (si un problème s'est produit). */
+  error?: string
+}
+
+/**
+ * Liste les cours dans lesquels un utilisateur Moodle est enrôlé.
+ * Le filtre par rôle (enseignant/tuteur uniquement) est appliqué côté client
+ * uniquement si la réponse inclut `roles[]` — sinon on retourne tout et
+ * c'est l'appelant qui décide.
+ *
+ * Retourne un objet structuré avec `accessDenied`/`error` pour permettre à
+ * l'UI de distinguer "aucun cours" (liste vide légitime) de "WS refusé"
+ * (config manquante côté Moodle).
+ */
+export async function getUserEnrolledCourses(
+  baseUrl: string,
+  token: string,
+  userid: number,
+  opts?: { teacherOnly?: boolean; bypassCache?: boolean },
+): Promise<UserCoursesResult> {
+  const cacheK = cacheKey('core_enrol_get_users_courses', baseUrl, `u${userid}`)
+  if (!opts?.bypassCache) {
+    const cached = await readCached<MoodleUserCourse[]>(cacheK)
+    if (cached) return { courses: filterCoursesByRole(cached, opts?.teacherOnly) }
+  }
+  try {
+    const courses = await moodleCall<MoodleUserCourse[]>(
+      baseUrl,
+      token,
+      'core_enrol_get_users_courses',
+      { userid, returnusercount: 0 },
+    )
+    const list = Array.isArray(courses) ? courses : []
+    await writeCached(cacheK, list, GET_USER_COURSES_TTL_SEC)
+    return { courses: filterCoursesByRole(list, opts?.teacherOnly) }
+  } catch (err) {
+    const message = (err as Error).message
+    // La fonction WS n'est pas activée côté Moodle → on remonte le drapeau
+    // pour que l'UI affiche un message actionnable au lieu de "0 cours".
+    const isAccessDenied = /accessexception|access to the function/i.test(message)
+    return {
+      courses: [],
+      accessDenied: isAccessDenied,
+      error: message.slice(0, 300),
+    }
+  }
+}
+
+/**
+ * Rôles Moodle "pédagogiques" : editingteacher (3) = enseignant éditeur,
+ * teacher (4) = tuteur. On filtre par shortname plutôt que roleid car les
+ * roleids peuvent varier d'une plateforme à l'autre.
+ */
+const TEACHER_ROLE_SHORTNAMES = new Set(['editingteacher', 'teacher'])
+
+function filterCoursesByRole(
+  courses: MoodleUserCourse[],
+  teacherOnly?: boolean,
+): MoodleUserCourse[] {
+  if (!teacherOnly) return courses
+  return courses.filter(c => {
+    if (!Array.isArray(c.roles) || c.roles.length === 0) {
+      // Si Moodle ne renvoie pas les rôles, on garde le cours (impossible de
+      // filtrer sans info) — c'est plus utile pour l'utilisateur que de cacher.
+      return true
+    }
+    return c.roles.some(r => TEACHER_ROLE_SHORTNAMES.has(r.shortname))
+  })
+}

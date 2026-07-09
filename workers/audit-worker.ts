@@ -59,11 +59,34 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
     ? (session.categoriesJson as string[])
     : []
 
-  const { courses, tree } = await listCoursesForAudit({
+  // Sous-ensemble d'IDs Moodle à auditer (feature "Auditer mes cours"). Si
+  // vide/null → toute la plateforme (comportement historique).
+  const courseIdsFilter = Array.isArray(session.courseIdsJson)
+    ? (session.courseIdsJson as number[]).filter(n => typeof n === 'number' && n > 0)
+    : []
+
+  // Deux chemins :
+  //  - Audit ciblé (courseIdsFilter présent) : on demande directement les cours
+  //    par IDs — évite de scanner toute la plateforme (gain énorme sur une
+  //    plateforme à 50 000 cours pour un audit de 2-3 cours).
+  //  - Audit plateforme complète : listing habituel + filtre catégoriel.
+  const { courses: allCourses, tree } = await listCoursesForAudit({
     baseUrl,
     token,
     categoryFilter: categories,
+    courseIds: courseIdsFilter.length > 0 ? courseIdsFilter : undefined,
   })
+  const courses = allCourses
+
+  logger.info(
+    {
+      sessionId,
+      total: courses.length,
+      courseFilter: courseIdsFilter.length > 0,
+      targetedFetch: courseIdsFilter.length > 0,
+    },
+    'Worker: cours retenus',
+  )
 
   await prisma.auditSession.update({
     where: { id: sessionId },
@@ -102,7 +125,16 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
           totalCourses: true,
         },
       })
-      if (current?.status === 'cancelled') {
+      // Session supprimée (via DELETE API ou cleanup) alors qu'on traitait ses
+      // cours : NE PAS tenter d'upsert derrière (FK violation en cascade sur
+      // course_audits.session_id). On sort proprement du job — les autres
+      // cours en parallèle sortiront aussi à leur prochain check.
+      if (!current) {
+        cancelled = true
+        logger.warn({ sessionId, courseId: course.id }, 'Session supprimée en cours d\'audit — skip')
+        return
+      }
+      if (current.status === 'cancelled') {
         cancelled = true
         return
       }
@@ -138,6 +170,22 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
         const score = Number(result.score_global ?? 0)
         const duration = Date.now() - courseStart
 
+        // Le LLM peut tomber en FALLBACK silencieusement (parseAiResponse() ne
+        // throw pas si réponse vide/malformée, callAi() ne throw pas non plus si
+        // exception ⇒ description_courte = "Erreur IA: ...").
+        // Dans ce cas le score=0 sans flag d'erreur perd l'auditeur (il croit
+        // à un cours vide). On force errorMessage pour qu'il apparaisse dans la
+        // section "Échecs" et le badge "partiel".
+        const aiDesc = (result as { ai?: { description_courte?: string } }).ai?.description_courte
+        const isLlmFallback =
+          aiDesc === 'Analyse indisponible' ||
+          (typeof aiDesc === 'string' && aiDesc.startsWith('Erreur IA:'))
+        const llmErrorMessage = isLlmFallback
+          ? aiDesc === 'Analyse indisponible'
+            ? 'LLM indisponible (réponse vide ou malformée)'
+            : `LLM indisponible : ${aiDesc.replace(/^Erreur IA:\s*/, '')}`
+          : null
+
         await prisma.courseAudit.upsert({
           where: { sessionId_courseId: { sessionId, courseId: course.id } },
           create: {
@@ -148,6 +196,7 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
             resultJson: result,
             scoreGlobal: score,
             durationMs: duration,
+            errorMessage: llmErrorMessage,
           },
           update: {
             shortname: course.shortname ?? '',
@@ -155,15 +204,19 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
             resultJson: result,
             scoreGlobal: score,
             durationMs: duration,
-            errorMessage: null,
+            errorMessage: llmErrorMessage,
           },
         })
 
         // Increment ATOMIQUE côté Postgres : pas de race entre tâches parallèles.
         // On lit la valeur après increment pour publier l'event SSE avec la valeur réelle.
+        // Un fallback LLM compte comme un échec (le score n'est pas fiable), pas
+        // un succès — sinon la barre de progression "X/Y cours OK" ment.
         const updated = await prisma.auditSession.update({
           where: { id: sessionId },
-          data: { doneCourses: { increment: 1 } },
+          data: isLlmFallback
+            ? { failedCourses: { increment: 1 } }
+            : { doneCourses: { increment: 1 } },
           select: { doneCourses: true, failedCourses: true, totalCourses: true },
         })
         await publish(sessionId, {
@@ -184,6 +237,18 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
           { sessionId, courseId: course.id, err: message },
           'Audit cours en échec',
         )
+        // Re-check session existence : si la session a été supprimée pendant
+        // qu'on traitait le cours (rare mais possible), inutile de tenter un
+        // upsert — la FK échouerait et polluerait les logs à l'infini.
+        const stillExists = await prisma.auditSession.findUnique({
+          where: { id: sessionId },
+          select: { id: true },
+        })
+        if (!stillExists) {
+          cancelled = true
+          logger.warn({ sessionId, courseId: course.id }, 'Session supprimée pendant l\'audit — skip upsert')
+          return
+        }
         await prisma.courseAudit.upsert({
           where: { sessionId_courseId: { sessionId, courseId: course.id } },
           create: {

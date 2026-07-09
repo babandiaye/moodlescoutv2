@@ -15,7 +15,7 @@ export default async function ConfigurationPage() {
   const [platforms, llmConfigs] = await Promise.all([
     prisma.moodlePlatform.findMany({
       orderBy: { createdAt: 'desc' },
-      select: { id: true, name: true, url: true, version: true, createdAt: true },
+      select: { id: true, name: true, url: true, version: true, isActive: true, createdAt: true },
     }),
     prisma.llmConfig.findMany({
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
@@ -26,6 +26,7 @@ export default async function ConfigurationPage() {
         apiUrl: true,
         model: true,
         isDefault: true,
+        isActive: true,
       },
     }),
   ])

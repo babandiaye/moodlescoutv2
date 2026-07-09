@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { requireAuth } from '@/lib/api-helpers'
+import { checkAuditAccess } from '@/lib/audit-access'
 import { logger } from '@/lib/logger'
-import { canViewAudit, canModifyAudit } from '@/lib/permissions'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,6 +13,9 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   const a = await requireAuth()
   if (!a.ok) return a.response
   const { id } = await ctx.params
+
+  const access = await checkAuditAccess(id, a.user)
+  if (!access.ok) return access.response
 
   const session = await prisma.auditSession.findUnique({
     where: { id },
@@ -36,11 +39,6 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
       },
     },
   })
-  if (!session) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
-  if (!canViewAudit(a.user.role, a.user.id, session.userId)) {
-    return NextResponse.json({ error: 'Accès refusé' }, { status: 403 })
-  }
-
   return NextResponse.json({ session })
 }
 
@@ -49,14 +47,17 @@ export async function DELETE(_req: NextRequest, ctx: Ctx) {
   if (!a.ok) return a.response
   const { id } = await ctx.params
 
-  const session = await prisma.auditSession.findUnique({
-    where: { id },
-    select: { userId: true, status: true },
-  })
-  if (!session) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
-  // Suppression : on utilise canModifyAudit (plus strict) → le lecteur ne peut PAS supprimer.
-  if (!canModifyAudit(a.user.role, a.user.id, session.userId)) {
-    return NextResponse.json({ error: 'Accès refusé' }, { status: 403 })
+  const access = await checkAuditAccess(id, a.user, true)
+  if (!access.ok) return access.response
+
+  // Refuse la suppression d'un audit en cours : le worker écrit encore dans
+  // courseAudits, la cascade FK provoquerait des écritures orphelines et la
+  // perte des résultats partiels. L'utilisateur doit d'abord annuler.
+  if (access.audit.status === 'running' || access.audit.status === 'pending') {
+    return NextResponse.json(
+      { error: 'Annulez d\'abord l\'audit avant de le supprimer.' },
+      { status: 409 },
+    )
   }
 
   await prisma.auditSession.delete({ where: { id } })

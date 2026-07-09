@@ -5,6 +5,7 @@ export type LlmConfig = {
   apiUrl: string | null
   model: string
   isDefault: boolean
+  isActive: boolean
 }
 
 export type Provider = 'ollama' | 'anthropic'

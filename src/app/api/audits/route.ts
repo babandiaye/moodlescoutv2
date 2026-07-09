@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
+import { decrypt } from '@/lib/crypto'
 import { requireAuth, rateLimit } from '@/lib/api-helpers'
 import { getAuditQueue } from '@/lib/queue'
 import { logger } from '@/lib/logger'
-import { canViewAllAudits, canLaunchAudit } from '@/lib/permissions'
+import {
+  activeAuditPlatformFilter,
+  canLaunchAudit,
+  canViewAllAudits,
+  isAdmin,
+} from '@/lib/permissions'
+import { getMoodleUserIdByEmail, getUserEnrolledCourses } from '@/lib/moodle'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -15,6 +22,9 @@ const createSchema = z.object({
   extractImages: z.boolean().default(true),
   quizDetail: z.enum(['meta', 'detail', 'both']).default('both'),
   categories: z.array(z.string()).default([]),
+  // Sous-ensemble d'IDs Moodle. Optionnel : si présent, l'audit ne traite
+  // que ces cours (feature "Auditer mes cours" depuis /me/courses).
+  courseIds: z.array(z.number().int().positive()).optional(),
 })
 
 function buildSessionKey(): string {
@@ -29,7 +39,10 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url)
   const limit = Math.min(Number(url.searchParams.get('limit') ?? 20), 100)
-  const where = canViewAllAudits(a.user.role) ? {} : { userId: a.user.id }
+  const where = {
+    ...(canViewAllAudits(a.user.role) ? {} : { userId: a.user.id }),
+    ...activeAuditPlatformFilter(a.user.role),
+  }
 
   const sessions = await prisma.auditSession.findMany({
     where,
@@ -89,7 +102,7 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const { platformId, llmConfigId, extractImages, quizDetail, categories } = parsed.data
+  const { platformId, llmConfigId, extractImages, quizDetail, categories, courseIds } = parsed.data
 
   const [platform, llm] = await Promise.all([
     prisma.moodlePlatform.findUnique({ where: { id: platformId } }),
@@ -97,6 +110,78 @@ export async function POST(req: NextRequest) {
   ])
   if (!platform) return NextResponse.json({ error: 'Plateforme inconnue' }, { status: 404 })
   if (!llm) return NextResponse.json({ error: 'Config LLM inconnue' }, { status: 404 })
+  // Un non-admin ne peut pas cibler une plateforme désactivée (elle est censée
+  // ne pas lui être visible dans l'UI, mais on ferme aussi la porte côté API
+  // pour empêcher tout POST direct).
+  if (!isAdmin(a.user.role) && !platform.isActive) {
+    return NextResponse.json({ error: 'Plateforme désactivée par l\'administrateur.' }, { status: 403 })
+  }
+  // Même règle pour le LLM : un fournisseur IA désactivé n'est plus disponible,
+  // quel que soit le rôle (contrairement aux plateformes, où l'admin garde la
+  // main — un LLM inactif est vraiment inactif partout).
+  if (!llm.isActive) {
+    return NextResponse.json({ error: 'Fournisseur IA désactivé.' }, { status: 403 })
+  }
+
+  // Restriction rôle "auditeur" : ne peut lancer un audit QUE sur ses propres
+  // cours (enseignant / tuteur sur la plateforme). L'admin garde le mode libre.
+  //   - courseIds obligatoire
+  //   - chaque ID doit correspondre à un cours de l'auditeur sur cette plateforme
+  // Vérifié côté serveur pour empêcher le bypass (client qui trafique la
+  // requête pour auditer des cours hors périmètre).
+  if (!isAdmin(a.user.role)) {
+    if (!courseIds || courseIds.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            'En tant qu\'auditeur, vous devez sélectionner des cours dans « Mes cours » avant de lancer un audit.',
+        },
+        { status: 403 },
+      )
+    }
+    try {
+      const email = a.user.email ?? ''
+      const token = decrypt(platform.tokenEnc)
+      const userid = await getMoodleUserIdByEmail(platform.url, token, email)
+      if (!userid) {
+        return NextResponse.json(
+          {
+            error:
+              'Votre email ne correspond à aucun compte sur cette plateforme Moodle.',
+          },
+          { status: 403 },
+        )
+      }
+      const enrolled = await getUserEnrolledCourses(platform.url, token, userid, {
+        teacherOnly: true,
+      })
+      if (enrolled.accessDenied) {
+        return NextResponse.json(
+          {
+            error:
+              'La fonction Moodle "core_enrol_get_users_courses" n\'est pas activée. Demandez à la DITSI de l\'ajouter au service Web externe.',
+          },
+          { status: 503 },
+        )
+      }
+      const myCourseIds = new Set(enrolled.courses.map(c => Number(c.id)))
+      const forbidden = courseIds.filter(id => !myCourseIds.has(id))
+      if (forbidden.length > 0) {
+        return NextResponse.json(
+          {
+            error: `Vous n'êtes pas enseignant/tuteur de ${forbidden.length} cours demandé(s). Rechargez « Mes cours ».`,
+          },
+          { status: 403 },
+        )
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message }, 'Vérification enrôlement audit ciblé : échec')
+      return NextResponse.json(
+        { error: 'Impossible de vérifier votre enrôlement Moodle : ' + (err as Error).message.slice(0, 120) },
+        { status: 503 },
+      )
+    }
+  }
 
   const session = await prisma.auditSession.create({
     data: {
@@ -108,6 +193,8 @@ export async function POST(req: NextRequest) {
       extractImages,
       quizDetail,
       categoriesJson: categories,
+      // Null si pas de sous-ensemble → worker audite toute la plateforme (comportement historique).
+      courseIdsJson: courseIds && courseIds.length > 0 ? courseIds : undefined,
     },
     select: { id: true, sessionKey: true, status: true, createdAt: true },
   })

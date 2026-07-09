@@ -57,6 +57,31 @@ export function canModifyAudit(
   return false
 }
 
+/**
+ * Filtre Prisma pour lister les plateformes visibles par ce rôle :
+ *   - admin : voit tout (actives + désactivées)
+ *   - autres : ne voient que les plateformes actives
+ *
+ * À composer avec d'autres `where` via spread. Utilisé partout où on liste
+ * des plateformes côté UI/API pour les non-admins.
+ */
+export function activePlatformFilter(
+  role: UserRole | null | undefined,
+): { isActive?: true } {
+  return isAdmin(role) ? {} : { isActive: true }
+}
+
+/**
+ * Filtre Prisma pour les audits : masque les audits associés à des plateformes
+ * désactivées pour tout le monde sauf l'admin. Cohérent avec la règle "si la
+ * plateforme est désactivée les non-admins ne la voient plus, ni ses cours".
+ */
+export function activeAuditPlatformFilter(
+  role: UserRole | null | undefined,
+): { platform?: { isActive: true } } {
+  return isAdmin(role) ? {} : { platform: { isActive: true } }
+}
+
 /** Libellé d'affichage humain du rôle. */
 export function roleLabel(role: UserRole | null | undefined): string {
   switch (role) {

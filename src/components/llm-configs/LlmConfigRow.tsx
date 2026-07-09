@@ -96,10 +96,34 @@ export function LlmConfigRow({
     }
   }
 
+  const handleToggleActive = async () => {
+    const newVal = !c.isActive
+    try {
+      const res = await fetch(`/api/llm-configs/${c.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: newVal }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        onError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      onUpdated(data.config as LlmConfig)
+    } catch (err) {
+      onError((err as Error).message)
+    }
+  }
+
   return (
     <div
       className="platform-item"
-      style={{ flexDirection: 'column', alignItems: 'stretch' }}
+      style={{
+        flexDirection: 'column',
+        alignItems: 'stretch',
+        opacity: c.isActive ? 1 : 0.7,
+        borderLeft: c.isActive ? undefined : '3px solid var(--danger)',
+      }}
     >
       <div
         style={{
@@ -116,6 +140,11 @@ export function LlmConfigRow({
             <span className="badge badge-neutral">{c.provider}</span>
             <span className="badge badge-neutral">{c.model}</span>
             {c.isDefault && <span className="badge badge-success">Défaut</span>}
+            {c.isActive ? (
+              <span className="badge badge-success">Active</span>
+            ) : (
+              <span className="badge badge-danger">Désactivée</span>
+            )}
             <LlmTestBadge result={testing} />
           </div>
           {c.apiUrl && <span className="platform-url">{c.apiUrl}</span>}
@@ -157,6 +186,19 @@ export function LlmConfigRow({
               Défaut
             </button>
           )}
+          <button
+            type="button"
+            className={`btn ${c.isActive ? 'btn-secondary' : 'btn-success'}`}
+            style={{ fontSize: 12, padding: '4px 10px' }}
+            onClick={handleToggleActive}
+            title={
+              c.isActive
+                ? 'Désactiver ce fournisseur (plus disponible dans les audits)'
+                : 'Réactiver ce fournisseur'
+            }
+          >
+            {c.isActive ? 'Désactiver' : 'Activer'}
+          </button>
           <button
             type="button"
             className="btn btn-danger"

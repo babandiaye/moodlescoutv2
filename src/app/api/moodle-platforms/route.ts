@@ -27,6 +27,7 @@ export async function GET() {
       name: true,
       url: true,
       version: true,
+      isActive: true,
       createdAt: true,
       updatedAt: true,
     },

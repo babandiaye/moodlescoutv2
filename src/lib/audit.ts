@@ -5,6 +5,7 @@ import {
   getCourseContents,
   getCourseImages,
   getCourses,
+  getCoursesByField,
   getEnrolledUsers,
   getQuizAccessInfo,
   getQuizAttempts,
@@ -596,11 +597,31 @@ export type ListCoursesOpts = {
   baseUrl: string
   token: string
   categoryFilter?: string[]
+  /**
+   * Sous-ensemble d'IDs Moodle à auditer. Si présent et non vide, on court-
+   * circuite le fetch de TOUS les cours de la plateforme et on appelle
+   * directement `core_course_get_courses_by_field(ids, [...])`. Gain massif
+   * sur un audit ciblé (2-3 cours au lieu de scanner 50 000).
+   *
+   * Le filtre par catégorie est ignoré dans ce mode (on connaît déjà l'ID).
+   */
+  courseIds?: number[]
 }
 
 export async function listCoursesForAudit(
   opts: ListCoursesOpts,
 ): Promise<{ courses: MoodleCourse[]; tree: CategoriesTree }> {
+  // Chemin RAPIDE : IDs connus → fetch direct, saute le listing complet.
+  // On garde le fetch de l'arbre de catégories en parallèle car on en a
+  // besoin pour construire category_path dans le résultat.
+  if (opts.courseIds && opts.courseIds.length > 0) {
+    const [byField, tree] = await Promise.all([
+      getCoursesByField(opts.baseUrl, opts.token, 'ids', opts.courseIds.join(',')),
+      getCategoriesTree(opts.baseUrl, opts.token),
+    ])
+    return { courses: byField, tree }
+  }
+
   const [courses, tree] = await Promise.all([
     getCourses(opts.baseUrl, opts.token),
     getCategoriesTree(opts.baseUrl, opts.token),

@@ -263,6 +263,127 @@ export async function exportToExcel(courses: CourseData[]): Promise<Buffer> {
   return Buffer.from(buffer)
 }
 
+// ─── Export CSV ──────────────────────────────────────────────
+//
+// RFC 4180 : virgule séparateur, quote seulement si nécessaire (contient ,;"
+// ou saut de ligne), doubler les guillemets à l'intérieur. On préfixe le
+// fichier d'un BOM UTF-8 pour qu'Excel/LibreOffice détectent l'encodage sans
+// que l'utilisateur ait à choisir.
+
+function csvCell(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  const s = String(value)
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+function csvRow(cells: unknown[]): string {
+  return cells.map(csvCell).join(',')
+}
+
+/**
+ * Export CSV plat (1 ligne = 1 cours). Colonnes = mêmes que la feuille "Cours"
+ * du XLSX pour rester cohérent — un utilisateur qui exporte les deux formats
+ * doit retrouver ses colonnes au même endroit.
+ */
+export function exportToCsv(courses: CourseData[]): Buffer {
+  const headers = [
+    'Plateforme',
+    'Moodle',
+    'Code',
+    'Intitulé',
+    'Catégorie',
+    'Chemin catégorie',
+    'Visible',
+    'Créé',
+    'Révisé',
+    'Inscrits',
+    'Étudiants',
+    'Enseignants',
+    'Tuteurs',
+    'Séquences',
+    'Activités',
+    'Quiz',
+    'Devoirs',
+    'Forums',
+    'Ressources',
+    'Score global',
+    'Score IA',
+    'Score conformité',
+    'Conformité (%)',
+    'Statut conformité',
+    'Pertinence /10',
+    'Éval /10',
+    'Structure /10',
+    'Engagement /10',
+    'Niveau',
+    'Durée estimée',
+    'Langue',
+    'Domaine',
+    'Animateur principal',
+    'Description IA',
+    'Points forts',
+    'Points faibles',
+    'Recommandations',
+    'Justification',
+  ]
+  const lines: string[] = [csvRow(headers)]
+
+  for (const c of courses) {
+    const animList = (c.animateurs ?? []) as any[]
+    const am = animList.length > 0
+      ? `${animList[0].nom ?? ''}${animList[0].departement ? ` (${animList[0].departement})` : ''}`
+      : ''
+    const categoryPath = Array.isArray(c.category_path) ? c.category_path.join(' / ') : ''
+
+    lines.push(csvRow([
+      c.platform ?? '',
+      `v${c.moodle_version ?? '4'}.x`,
+      c.shortname ?? '',
+      c.fullname ?? '',
+      c.category ?? '',
+      categoryPath,
+      c.visible ? 'Oui' : 'Non',
+      c.year_created ?? '',
+      c.year_modified ?? '',
+      Number(c.nb_inscrits ?? 0),
+      Number(c.nb_etudiants ?? 0),
+      Number(c.nb_enseignants ?? 0),
+      Number(c.nb_tuteurs ?? 0),
+      Number(c.nb_sections ?? 0),
+      Number(c.nb_activites ?? 0),
+      Number(c.nb_quiz ?? 0),
+      Number(c.nb_devoirs ?? 0),
+      Number(c.nb_forums ?? 0),
+      Number(c.nb_ressources ?? 0),
+      Number(c.score_global ?? 0),
+      Number(c.score_ia ?? 0),
+      Number(c.score_struct ?? 0),
+      Number(c.conformite_pct ?? 0),
+      c.conformite_statut ?? '',
+      Number(c.ai?.pertinence_contenu ?? 0),
+      Number(c.ai?.qualite_evaluation ?? 0),
+      Number(c.ai?.structure_pedagogique ?? 0),
+      Number(c.ai?.engagement_prevu ?? 0),
+      c.ai?.niveau ?? '',
+      c.ai?.duree_estimee ?? '',
+      c.ai?.langue ?? '',
+      c.ai?.domaine ?? '',
+      am,
+      c.ai?.description_courte ?? '',
+      (c.ai?.points_forts ?? []).join(' | '),
+      (c.ai?.points_faibles ?? []).join(' | '),
+      (c.ai?.recommandations ?? []).join(' | '),
+      c.ai?.justification_score ?? '',
+    ]))
+  }
+
+  // BOM UTF-8 devant : Excel/LibreOffice détectent l'encodage correctement.
+  return Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(lines.join('\r\n'), 'utf8')])
+}
+
 const PDF_C1 = '#1B4F72'
 const PDF_C2 = '#2E86C1'
 const PDF_GREEN = '#1E8449'

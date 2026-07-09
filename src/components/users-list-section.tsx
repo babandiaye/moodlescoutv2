@@ -1,8 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { UsersIcon } from '@heroicons/react/24/outline'
 import type { UserRole } from '@prisma/client'
+import { Pagination } from './pagination'
 
 type User = {
   id: string
@@ -18,7 +20,7 @@ type User = {
 }
 
 const ROLE_LABELS: Record<UserRole, string> = {
-  admin: '★ Admin',
+  admin: 'Admin',
   auditeur: 'Auditeur',
   lecteur: 'Lecteur',
 }
@@ -63,6 +65,12 @@ export function UsersListSection({ initial, currentUserId }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [filterRole, setFilterRole] = useState<'all' | UserRole>('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+
+  // Tout changement de filtre ramène à la première page (sinon on peut se
+  // retrouver sur "page 3" alors qu'il ne reste plus que 5 résultats).
+  useEffect(() => { setPage(1) }, [search, filterRole, pageSize])
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim()
@@ -77,6 +85,11 @@ export function UsersListSection({ initial, currentUserId }: Props) {
       )
     })
   }, [users, search, filterRole])
+
+  const paged = useMemo(
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize],
+  )
 
   const stats = useMemo(
     () => ({
@@ -129,7 +142,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
       <div className="card">
         <div className="card-header">
           <span className="card-title">
-            <span className="card-icon">👥</span> Gestion des utilisateurs
+            <UsersIcon className="card-icon" /> Gestion des utilisateurs
           </span>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <span className="badge badge-info">{stats.total} comptes</span>
@@ -186,7 +199,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
                     <td colSpan={9}>Aucun utilisateur</td>
                   </tr>
                 )}
-                {filtered.map(u => {
+                {paged.map(u => {
                   const isMe = u.id === currentUserId
                   const isBusy = busy[u.id] === true
                   return (
@@ -242,7 +255,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
                               )
                             }}
                           >
-                            <option value="admin">★ Admin</option>
+                            <option value="admin">Admin</option>
                             <option value="auditeur">Auditeur</option>
                             <option value="lecteur">Lecteur</option>
                           </select>
@@ -308,6 +321,15 @@ export function UsersListSection({ initial, currentUserId }: Props) {
             ni modifier votre propre rôle, ni désactiver votre propre compte.
           </div>
         </div>
+        {filtered.length > 0 && (
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        )}
       </div>
     </div>
   )
