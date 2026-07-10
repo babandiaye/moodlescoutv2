@@ -207,16 +207,22 @@ export function SingleCourseAuditForm({ llmConfigs }: Props) {
               </select>
             </div>
             <div className="form-group">
-              <label className="form-label">Images du cours</label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 8 }}>
+              <label className="form-label">Analyse des images</label>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer', marginTop: 8 }}>
                 <input
                   type="checkbox"
                   checked={extractImages}
                   onChange={e => setExtractImages(e.target.checked)}
-                  style={{ width: 16, height: 16, accentColor: 'var(--brand)' }}
+                  style={{ width: 16, height: 16, accentColor: 'var(--brand)', marginTop: 2 }}
                 />
-                <span style={{ fontSize: 13 }}>
-                  Analyser les images (utile pour extraire le nom d&apos;un enseignant non enrôlé)
+                <span style={{ fontSize: 13, lineHeight: 1.4 }}>
+                  Analyser les images du cours (OCR bandeaux)
+                  <br />
+                  <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+                    {extractImages
+                      ? 'Utile pour extraire nom prof / matière depuis un bandeau. Audit ~50 % plus lent.'
+                      : '⚡ Audit accéléré. Les noms d\'enseignants sur bandeaux ne seront pas récupérés.'}
+                  </span>
                 </span>
               </label>
             </div>

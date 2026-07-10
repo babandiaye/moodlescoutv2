@@ -438,14 +438,35 @@ export async function auditCourse(
     ...rich.text_parts,
   ].join('\n')
 
-  const ai: AuditAiResult = await runLlm({
-    provider: llm.provider,
-    apiUrl: llm.apiUrl,
-    apiKey: llm.apiKey,
-    model: llm.model,
-    content: text,
-    images,
-  })
+  // Court-circuit LLM sur cours coquille vide (levier #4 du plan de perf) :
+  // zéro activité + zéro inscrit → l'appel gemma3:12b renverrait fatalement un
+  // JSON générique inutile après ~1 min de génération. Autant retourner
+  // directement un score 0 déterministe. Note : on garde `description_courte`
+  // distinct du fallback "Analyse indisponible" pour que le worker NE marque
+  // PAS ce cours comme failed (c'est un état légitime, pas une erreur LLM).
+  const isEmpty = rich.activities.length === 0 && enrolled.length === 0
+  const ai: AuditAiResult = isEmpty
+    ? {
+        description_courte: 'Cours vide (aucune activité, aucun inscrit)',
+        score_global: 0,
+        pertinence_contenu: 0,
+        qualite_evaluation: 0,
+        structure_pedagogique: 0,
+        engagement_prevu: 0,
+        objectifs_pedagogiques: [],
+        points_forts: [],
+        points_faibles: ['Cours vide — à supprimer ou peupler'],
+        recommandations: ['Ajouter au moins une section avec activité et inscrire des utilisateurs'],
+        animateurs_detectes: [],
+      }
+    : await runLlm({
+        provider: llm.provider,
+        apiUrl: llm.apiUrl,
+        apiKey: llm.apiKey,
+        model: llm.model,
+        content: text,
+        images,
+      })
 
   const animateurs: any[] = []
   for (const p of enseignants) animateurs.push({ ...p, role_label: 'Enseignant' })

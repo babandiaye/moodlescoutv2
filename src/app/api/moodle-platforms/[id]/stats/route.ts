@@ -113,6 +113,26 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       cached: false,
     }
     await writeCache(id, stats)
+
+    // Persistance BD du comptage : le cache Redis (TTL 10 min) reste utile pour
+    // afficher tous les champs (siteinfo, breakdown), mais le rapport d'audit
+    // et le dashboard lisent moodle_platforms.nb_users directement pour ne
+    // jamais dépendre du cache. Seuls les comptages VALIDES (total non null)
+    // écrasent la valeur précédente — on évite de régresser à null en cas de
+    // panne temporaire.
+    if (typeof usersResult.total === 'number') {
+      await prisma.moodlePlatform
+        .update({
+          where: { id },
+          data: {
+            nbUsers: usersResult.total,
+            nbUsersUpdatedAt: new Date(),
+            usersMethod: usersResult.method,
+          },
+        })
+        .catch(err => logger.warn({ id, err: err.message }, 'Persist nbUsers failed'))
+    }
+
     return NextResponse.json(stats)
   } catch (err) {
     const message = (err as Error).message

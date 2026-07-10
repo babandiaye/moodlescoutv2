@@ -1,21 +1,27 @@
 import Link from 'next/link'
 import {
-  HomeIcon,
   ClipboardDocumentListIcon,
   PlayIcon,
+  Cog6ToothIcon,
+  ChevronRightIcon,
+  DocumentTextIcon,
+  CpuChipIcon,
+  Squares2X2Icon,
+  ShieldCheckIcon,
   ChartBarIcon,
-  TrophyIcon,
+  ServerStackIcon,
+  CircleStackIcon,
+  CheckCircleIcon,
+  AcademicCapIcon,
 } from '@heroicons/react/24/outline'
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { AuditSparkline } from '@/components/audit-sparkline'
 import {
   activeAuditPlatformFilter,
   activePlatformFilter,
   canLaunchAudit,
   canViewAllAudits,
   isAdmin,
-  roleLabel,
 } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
@@ -31,17 +37,14 @@ type PlatformScoreRow = {
 export default async function Home() {
   const session = await auth()
   const user = session!.user
+  const seesAll = canViewAllAudits(user.role)
 
-  // Audits visibles : lecteur/admin voient tout, auditeur voit ses siens.
-  // Non-admins ne voient PAS les audits liés à une plateforme désactivée.
   const where = {
-    ...(canViewAllAudits(user.role) ? {} : { userId: user.id }),
+    ...(seesAll ? {} : { userId: user.id }),
     ...activeAuditPlatformFilter(user.role),
   }
 
-  const seesAll = canViewAllAudits(user.role)
-
-  const [platforms, llmConfigs, totalAudits, recent, sparklineData, topPlatforms] = await Promise.all([
+  const [platformsCount, llmCount, totalAudits, recentAudits, allSessions, topPlatforms] = await Promise.all([
     prisma.moodlePlatform.count({ where: activePlatformFilter(user.role) }),
     prisma.llmConfig.count({ where: { isActive: true } }),
     prisma.auditSession.count({ where }),
@@ -60,191 +63,286 @@ export default async function Home() {
         platform: { select: { name: true } },
       },
     }),
-    // Sparkline 30 jours — filtre user si non-admin/non-lecteur
-    fetchAuditsPerDayScoped(30, seesAll ? null : user.id, isAdmin(user.role)),
-    // Top 5 plateformes par score moyen des derniers audits de cours
-    fetchTopPlatforms(5, isAdmin(user.role)),
+    // Timeline "Activité récente" : 4 événements (audits + plateformes)
+    prisma.auditSession.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 4,
+      select: {
+        id: true,
+        sessionKey: true,
+        status: true,
+        createdAt: true,
+        finishedAt: true,
+        totalCourses: true,
+        doneCourses: true,
+        platform: { select: { name: true } },
+      },
+    }),
+    fetchTopPlatforms(1, isAdmin(user.role)),
   ])
 
-  const totalRecentActive = sparklineData.reduce((s, n) => s + n, 0)
-
-  const stats: Array<[string | number, string]> = [
-    [platforms, 'plateformes actives'],
-    [llmConfigs, 'fournisseurs IA'],
-    [totalAudits, 'audits total'],
-    [totalRecentActive, 'audits 30j'],
-    [recent.filter(r => r.status === 'running' || r.status === 'pending').length, 'en cours'],
-  ]
+  const recentOk = recentAudits.filter(a => a.status === 'completed').length
 
   return (
     <div className="flex-col-20">
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">
-            <HomeIcon className="card-icon" />
+      {/* HERO */}
+      <section className="hero-card">
+        <div className="hero-card-body">
+          <h1 className="hero-card-title">
             Bienvenue, {user.fullName || 'utilisateur'}
-          </span>
-          <span className="badge badge-info">{roleLabel(user.role)}</span>
-        </div>
-        <div className="card-body">
-          <p style={{ color: 'var(--text2)', fontSize: 13, marginBottom: 16 }}>
-            Plateforme d&apos;audit pédagogique des cours Moodle de l&apos;Université Numérique Cheikh Hamidou Kane.
+            <span className="hero-card-wave" aria-hidden="true">👋</span>
+          </h1>
+          <p className="hero-card-desc">
+            Plateforme d&apos;audit pédagogique des cours Moodle de l&apos;Université Numérique
+            Cheikh Hamidou Kane.
           </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="hero-card-actions">
             {canLaunchAudit(user.role) && (
               <Link href="/audits/new" className="btn btn-primary">
-                <PlayIcon style={{ width: 14, height: 14 }} /> Lancer un nouvel audit
+                <PlayIcon width={16} height={16} /> Lancer un nouvel audit
               </Link>
             )}
             <Link href="/audits" className="btn btn-secondary">
-              {canViewAllAudits(user.role) ? 'Voir tous les audits' : 'Voir mes audits'}
+              <ClipboardDocumentListIcon width={16} height={16} /> Voir tous les audits
             </Link>
-            <Link href="/plateformes" className="btn btn-secondary">Explorer les plateformes</Link>
             {isAdmin(user.role) && (
-              <Link href="/configuration" className="btn btn-secondary">Configuration</Link>
+              <Link href="/configuration" className="btn btn-secondary">
+                <Cog6ToothIcon width={16} height={16} /> Configuration
+              </Link>
             )}
           </div>
         </div>
-      </div>
+        <div className="hero-card-illustration">
+          <img src="/mslogo-transparent.svg" alt="" className="hero-card-logo" />
+        </div>
+      </section>
 
-      <div className="stats-row">
-        {stats.map(([n, l]) => (
-          <div key={l} className="stat-card">
-            <div className="stat-num">{n}</div>
-            <div className="stat-label">{l}</div>
+      {/* GRILLE : 4 stats + colonne latérale */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 20 }} className="grid-main">
+        <div className="flex-col-20" style={{ minWidth: 0 }}>
+          <div className="stats-row">
+            <StatCard
+              icon={<DocumentTextIcon />}
+              iconColor="blue"
+              value={platformsCount}
+              label="Plateformes Moodle"
+              sub="Actives"
+            />
+            <StatCard
+              icon={<CpuChipIcon />}
+              iconColor="teal"
+              value={llmCount}
+              label="Configurations LLM"
+              sub="Déployées"
+            />
+            <StatCard
+              icon={<Squares2X2Icon />}
+              iconColor="purple"
+              value={totalAudits}
+              label="Audits total"
+              sub="Depuis le début"
+            />
+            <StatCard
+              icon={<ShieldCheckIcon />}
+              iconColor="pink"
+              value={recentOk}
+              label="Audits récents OK"
+              sub="Dans les 5 derniers"
+            />
           </div>
-        ))}
-      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-        {/* Activité 30 jours */}
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title">
-              <ChartBarIcon className="card-icon" /> Activité (30 jours)
-            </span>
-            <span className="badge badge-info">{totalRecentActive} audit{totalRecentActive > 1 ? 's' : ''}</span>
-          </div>
-          <div className="card-body">
-            <AuditSparkline data={sparklineData} width={280} height={60} />
-            <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6, marginBottom: 0 }}>
-              {seesAll
-                ? 'Nombre d\'audits lancés par jour (toutes plateformes actives).'
-                : 'Vos audits, jour par jour.'}
-            </p>
+          {/* Audits récents */}
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">
+                <ClipboardDocumentListIcon className="card-icon" /> Audits récents
+              </span>
+              <Link href="/audits" className="btn btn-secondary" style={{ fontSize: 12, padding: '6px 12px' }}>
+                Voir tout
+              </Link>
+            </div>
+            <div className="card-body" style={{ padding: 0 }}>
+              {recentAudits.length === 0 ? (
+                <p style={{ color: 'var(--text3)', fontSize: 13, padding: 24 }}>
+                  {canLaunchAudit(user.role) ? (
+                    <>Aucun audit. <Link href="/audits/new">Lancez votre premier audit</Link>.</>
+                  ) : (
+                    <>Aucun audit pour le moment.</>
+                  )}
+                </p>
+              ) : (
+                <div className="results-table-wrap">
+                  <table className="results-table">
+                    <thead>
+                      <tr>
+                        <th>Audit</th>
+                        <th>Plateforme</th>
+                        <th>Statut</th>
+                        <th>Cours / échecs</th>
+                        <th>Date</th>
+                        <th style={{ width: 40 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentAudits.map(a => (
+                        <tr key={a.id}>
+                          <td style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+                            {a.sessionKey.length > 32 ? a.sessionKey.slice(0, 30) + '…' : a.sessionKey}
+                          </td>
+                          <td>
+                            <span className="badge badge-info">{a.platform.name}</span>
+                          </td>
+                          <td>
+                            <StatusBadge status={a.status} />
+                          </td>
+                          <td style={{ fontSize: 12 }}>
+                            {a.doneCourses}/{a.totalCourses} cours
+                            {a.failedCourses > 0 && (
+                              <> · <span style={{ color: 'var(--danger)' }}>{a.failedCourses} échec(s)</span></>
+                            )}
+                          </td>
+                          <td style={{ fontSize: 12, color: 'var(--text3)' }}>
+                            {new Date(a.createdAt).toLocaleString('fr-FR', {
+                              day: '2-digit', month: '2-digit', year: 'numeric',
+                              hour: '2-digit', minute: '2-digit',
+                            })}
+                          </td>
+                          <td>
+                            <Link
+                              href={`/audits/${a.id}`}
+                              aria-label="Ouvrir l'audit"
+                              style={{ display: 'grid', placeItems: 'center', color: 'var(--text3)' }}
+                            >
+                              <ChevronRightIcon width={18} height={18} />
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Top 5 plateformes */}
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title">
-              <TrophyIcon className="card-icon" /> Top plateformes par score
-            </span>
-            <span className="badge badge-info">{topPlatforms.length}</span>
+        {/* Colonne latérale : Activité + Statut système */}
+        <div className="flex-col-20" style={{ minWidth: 0 }}>
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">
+                <ChartBarIcon className="card-icon" /> Activité récente
+              </span>
+            </div>
+            <div className="card-body">
+              {allSessions.length === 0 ? (
+                <p style={{ fontSize: 12, color: 'var(--text3)', margin: 0 }}>Aucune activité récente.</p>
+              ) : (
+                <div className="timeline">
+                  {allSessions.map((a, i) => {
+                    const color = a.status === 'completed'
+                      ? 'green'
+                      : a.status === 'failed' || a.status === 'cancelled'
+                        ? 'orange'
+                        : a.status === 'running' || a.status === 'pending'
+                          ? 'blue'
+                          : 'purple'
+                    const title = a.status === 'completed'
+                      ? 'Audit terminé'
+                      : a.status === 'failed'
+                        ? 'Audit en échec'
+                        : a.status === 'cancelled'
+                          ? 'Audit annulé'
+                          : a.status === 'running'
+                            ? 'Audit en cours'
+                            : 'Audit créé'
+                    return (
+                      <div key={i} className="timeline-item">
+                        <span className={`timeline-dot ${color}`} />
+                        <div className="timeline-content">
+                          <div className="timeline-title">{title}</div>
+                          <div className="timeline-desc">
+                            {a.platform.name} — {a.doneCourses}/{a.totalCourses} cours
+                          </div>
+                          <div className="timeline-time">{relativeTime(a.createdAt)}</div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="card-body">
-            {topPlatforms.length === 0 ? (
-              <p style={{ fontSize: 13, color: 'var(--text3)', margin: 0 }}>
-                Aucun cours audité pour l&apos;instant.
-              </p>
-            ) : (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0, fontSize: 13 }}>
-                {topPlatforms.map((p, i) => {
-                  const scoreColor = p.avg_score >= 75 ? '#16a34a' : p.avg_score >= 50 ? '#d97706' : '#dc2626'
+
+          <div className="card">
+            <div className="card-header">
+              <span className="card-title">
+                <ShieldCheckIcon className="card-icon" /> Statut système
+              </span>
+              <Link href="/plateformes" style={{ fontSize: 11, color: 'var(--brand)', fontWeight: 600 }}>
+                Tout voir
+              </Link>
+            </div>
+            <div className="card-body">
+              <div className="status-list">
+                <StatusItem icon={<ServerStackIcon />} label="Services d'audit" ok />
+                <StatusItem
+                  icon={<CpuChipIcon />}
+                  label={llmCount > 0 ? `LLM (${llmCount} config${llmCount > 1 ? 's' : ''})` : 'LLM'}
+                  ok={llmCount > 0}
+                />
+                <StatusItem icon={<CircleStackIcon />} label="Base de données" ok />
+                <StatusItem icon={<AcademicCapIcon />} label="Intégration Moodle" ok={platformsCount > 0} />
+              </div>
+            </div>
+          </div>
+
+          {topPlatforms.length > 0 && (
+            <div className="card">
+              <div className="card-header">
+                <span className="card-title">
+                  <ChartBarIcon className="card-icon" /> Top plateforme
+                </span>
+              </div>
+              <div className="card-body">
+                {topPlatforms.map(p => {
+                  const scoreColor = p.avg_score >= 75 ? 'var(--success)' : p.avg_score >= 50 ? 'var(--warn)' : 'var(--danger)'
                   return (
-                    <li key={p.platform_id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                      <span style={{ color: 'var(--text3)', fontFamily: 'var(--mono)', width: 20 }}>{i + 1}.</span>
-                      <Link href={`/plateformes/${p.platform_id}`} style={{ flex: 1, color: 'var(--text)', textDecoration: 'none', fontWeight: 500 }}>
-                        {p.platform_name}
-                      </Link>
-                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{p.nb_audited} cours</span>
-                      <span style={{ fontSize: 11, color: 'var(--text3)' }}>{p.conformes_pct}% conf.</span>
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 600,
-                          padding: '2px 8px',
-                          borderRadius: 10,
-                          background: `${scoreColor}20`,
-                          color: scoreColor,
-                          border: `1px solid ${scoreColor}`,
-                          minWidth: 46,
-                          textAlign: 'center',
-                        }}
-                      >
+                    <Link
+                      key={p.platform_id}
+                      href={`/plateformes/${p.platform_id}`}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        color: 'var(--text)', textDecoration: 'none',
+                      }}
+                    >
+                      <div style={{
+                        width: 40, height: 40, borderRadius: 10,
+                        background: 'var(--brand-soft)',
+                        display: 'grid', placeItems: 'center',
+                        color: 'var(--brand)', fontWeight: 700, fontSize: 12,
+                      }}>
+                        #1
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{p.platform_name}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                          {p.nb_audited} cours · {p.conformes_pct}% conformes
+                        </div>
+                      </div>
+                      <span style={{
+                        fontSize: 13, fontWeight: 700, color: scoreColor,
+                        padding: '4px 10px', borderRadius: 10,
+                        background: `${scoreColor}18`,
+                      }}>
                         {p.avg_score}
                       </span>
-                    </li>
+                    </Link>
                   )
                 })}
-              </ul>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <span className="card-title">
-            <ClipboardDocumentListIcon className="card-icon" />
-            Audits récents
-          </span>
-          <Link href="/audits" className="btn btn-secondary" style={{ fontSize: 12 }}>Tout voir</Link>
-        </div>
-        <div className="card-body">
-          {recent.length === 0 ? (
-            <p style={{ color: 'var(--text3)', fontSize: 13 }}>
-              {canLaunchAudit(user.role) ? (
-                <>Aucun audit pour le moment. <Link href="/audits/new">Lancez votre premier audit</Link>.</>
-              ) : (
-                <>Aucun audit pour le moment.</>
-              )}
-            </p>
-          ) : (
-            recent.map(r => (
-              <Link
-                key={r.id}
-                href={`/audits/${r.id}`}
-                className="platform-item"
-                style={{ marginBottom: 8, textDecoration: 'none', color: 'inherit' }}
-              >
-                <div className="platform-info">
-                  <span className="platform-name" style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
-                    {r.sessionKey}
-                  </span>
-                  <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-                    <span className="badge badge-info">{r.platform.name}</span>
-                    <span
-                      className={`badge ${
-                        r.status === 'completed'
-                          ? 'badge-success'
-                          : r.status === 'failed' || r.status === 'cancelled'
-                            ? 'badge-danger'
-                            : r.status === 'running'
-                              ? 'badge-warn'
-                              : 'badge-neutral'
-                      }`}
-                    >
-                      {r.status}
-                    </span>
-                    <span className="badge badge-neutral">
-                      {r.doneCourses}/{r.totalCourses} cours
-                      {r.failedCourses > 0 ? ` · ${r.failedCourses} échec(s)` : ''}
-                    </span>
-                    <span className="badge badge-neutral">
-                      {new Date(r.createdAt).toLocaleString('fr-FR', {
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  </div>
-                </div>
-              </Link>
-            ))
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -252,63 +350,71 @@ export default async function Home() {
   )
 }
 
-/**
- * Version scopée par utilisateur/plateforme active. Séparée pour garder les
- * queries $queryRaw lisibles (pas de branchement dans le SQL tagged template).
- */
-async function fetchAuditsPerDayScoped(
-  days: number,
-  userIdFilter: string | null,
-  seesInactive: boolean,
-): Promise<number[]> {
-  const rows = userIdFilter
-    ? await prisma.$queryRaw<Array<{ day: Date; c: bigint }>>`
-        SELECT DATE_TRUNC('day', s.created_at) AS day, COUNT(*)::bigint AS c
-        FROM audit_sessions s
-        INNER JOIN moodle_platforms p ON p.id = s.platform_id
-        WHERE s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
-          AND s.user_id = ${userIdFilter}
-          AND p.is_active = true
-        GROUP BY day
-        ORDER BY day ASC
-      `
-    : seesInactive
-      ? await prisma.$queryRaw<Array<{ day: Date; c: bigint }>>`
-          SELECT DATE_TRUNC('day', s.created_at) AS day, COUNT(*)::bigint AS c
-          FROM audit_sessions s
-          WHERE s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
-          GROUP BY day
-          ORDER BY day ASC
-        `
-      : await prisma.$queryRaw<Array<{ day: Date; c: bigint }>>`
-          SELECT DATE_TRUNC('day', s.created_at) AS day, COUNT(*)::bigint AS c
-          FROM audit_sessions s
-          INNER JOIN moodle_platforms p ON p.id = s.platform_id
-          WHERE s.created_at >= NOW() - (${days}::int * INTERVAL '1 day')
-            AND p.is_active = true
-          GROUP BY day
-          ORDER BY day ASC
-        `
+// ─── Sous-composants ─────────────────────────────────────────
 
-  const byDay = new Map<string, number>()
-  for (const r of rows) {
-    byDay.set(new Date(r.day).toISOString().slice(0, 10), Number(r.c))
-  }
-  const out: number[] = []
-  const today = new Date()
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today)
-    d.setDate(today.getDate() - i)
-    const key = d.toISOString().slice(0, 10)
-    out.push(byDay.get(key) ?? 0)
-  }
-  return out
+function StatCard({
+  icon,
+  iconColor,
+  value,
+  label,
+  sub,
+}: {
+  icon: React.ReactNode
+  iconColor: 'blue' | 'purple' | 'pink' | 'orange' | 'teal' | 'green' | 'yellow'
+  value: number | string
+  label: string
+  sub?: string
+}) {
+  return (
+    <div className="stat-card">
+      <div className={`stat-icon ${iconColor}`}>{icon}</div>
+      <div className="stat-body">
+        <div className="stat-num">{value}</div>
+        <div className="stat-label">{label}</div>
+        {sub && <div className="stat-sublabel">{sub}</div>}
+      </div>
+    </div>
+  )
 }
 
-/**
- * Top N plateformes par score moyen (dernier audit réussi par cours agrégé).
- * Similaire à category-stats mais groupé par platform.
- */
+function StatusBadge({ status }: { status: string }) {
+  if (status === 'completed') {
+    return <span className="badge badge-success"><CheckCircleIcon width={12} height={12} /> Terminé</span>
+  }
+  if (status === 'failed' || status === 'cancelled') {
+    return <span className="badge badge-danger">✕ {status === 'failed' ? 'Échec' : 'Annulé'}</span>
+  }
+  if (status === 'running') {
+    return <span className="badge badge-warn">● En cours</span>
+  }
+  return <span className="badge badge-neutral">En attente</span>
+}
+
+function StatusItem({ icon, label, ok }: { icon: React.ReactNode; label: string; ok: boolean }) {
+  return (
+    <div className="status-item">
+      <div className={`status-item-icon ${ok ? '' : 'warn'}`}>{icon}</div>
+      <div className="status-item-label">{label}</div>
+      <span className={`status-item-badge ${ok ? '' : 'warn'}`}>
+        {ok ? 'Opérationnel' : 'Non configuré'}
+      </span>
+    </div>
+  )
+}
+
+function relativeTime(d: Date): string {
+  const diff = Date.now() - d.getTime()
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return 'à l\'instant'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `il y a ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `il y a ${h} h`
+  const days = Math.floor(h / 24)
+  if (days < 7) return `il y a ${days} j`
+  return d.toLocaleDateString('fr-FR')
+}
+
 async function fetchTopPlatforms(limit: number, seesInactive: boolean): Promise<PlatformScoreRow[]> {
   const rows = seesInactive
     ? await prisma.$queryRaw<PlatformScoreRow[]>`

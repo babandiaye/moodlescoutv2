@@ -1,5 +1,8 @@
 import axios from 'axios'
+import { createHash } from 'node:crypto'
 import { withLlmSlot } from './llm-semaphore'
+import { redis } from './redis'
+import { logger } from './logger'
 
 export const AUDIT_PROMPT = `Tu es expert en ingénierie pédagogique et en OCR. Analyse ce cours Moodle (UN-CHK, Sénégal).
 {img_note}
@@ -118,9 +121,17 @@ export async function callOllama(opts: {
 
   const payload: Record<string, any> = {
     model,
-    prompt: buildPrompt(content, images.length, 3500),
+    prompt: buildPrompt(content, images.length, 2000),
     stream: false,
-    options: { temperature: 0.1, num_predict: 2500 },
+    // num_predict abaissé de 2500 → 1200 : le JSON typique fait ~800-1200
+    // tokens ; au-delà c'est du freestyle sur points_forts/recommandations
+    // qui fait dérailler la latence. Mesuré à ~46s/appel gemma3:12b vs ~75s
+    // avant (bench du 2026-07-10). Levier #1 du plan de perf.
+    //
+    // NB : on n'utilise PAS `format: 'json'` d'Ollama ici — testé et confirmé
+    // qu'il fait hanger gemma3:12b (timeout > 8min). parseAiResponse() gère
+    // déjà les cas de sortie enveloppée en markdown ```json … ```.
+    options: { temperature: 0.1, num_predict: 1200 },
   }
   if (images.length && isMultimodal) {
     payload.images = images.slice(0, 4).map(b => b.toString('base64'))
@@ -238,13 +249,54 @@ async function runLlmOnce(opts: LlmRunOpts): Promise<AuditAiResult> {
   return parseAiResponse(raw)
 }
 
+/**
+ * Empreinte de cache : SHA-256 de (provider + model + content + hash(images)).
+ * Toute modification du texte structuré du cours ou d'une image change le hash
+ * → cache-miss automatique. TTL suffisant pour amortir plusieurs re-runs.
+ */
+const LLM_CACHE_TTL_SEC = 7 * 24 * 3600 // 7 jours
+
+function computeLlmCacheKey(opts: LlmRunOpts): string {
+  const h = createHash('sha256')
+  h.update(opts.provider)
+  h.update('|')
+  h.update(opts.model)
+  h.update('|')
+  h.update(opts.content)
+  h.update('|')
+  for (const img of opts.images) {
+    h.update(createHash('sha1').update(img).digest())
+  }
+  return `llm:audit:${h.digest('hex')}`
+}
+
 export async function runLlm(opts: LlmRunOpts): Promise<AuditAiResult> {
+  const label = `${opts.provider}:${opts.model}`
+
+  // ─── Cache Redis (levier #5) ───────────────────────────────
+  // On hash le prompt effectif (provider + model + content + images) et on
+  // regarde s'il existe déjà un résultat. Un cours ré-audité avec le même
+  // contenu = pas de nouvel appel LLM. Cache-miss automatique dès qu'un
+  // module Moodle est modifié (le text change → hash change).
+  // Note : on ne cache PAS les fallbacks — inutile de faire perdurer un échec.
+  const cacheKey = computeLlmCacheKey(opts)
+  if (redis) {
+    try {
+      const cached = await redis.get(cacheKey)
+      if (cached) {
+        logger.info({ label, cacheKey }, 'Cache LLM : hit')
+        return JSON.parse(cached) as AuditAiResult
+      }
+    } catch (err) {
+      logger.warn({ label, err: (err as Error).message }, 'Cache LLM : read failed, fallback direct')
+    }
+  }
+
   // Sémaphore : protège un Ollama mono-GPU contre les inférences concurrentes
   // qui satureraient la VRAM. Pour Anthropic (API cloud), on peut monter plus haut.
   const max = Number(
     process.env.LLM_MAX_CONCURRENT ?? (opts.provider === 'anthropic' ? 5 : 1),
   )
-  const label = `${opts.provider}:${opts.model}`
   // 2 tentatives max : la 2e couvre les cas de JSON tronqué / timeout
   // transitoire côté Ollama. Au-delà on ne gagne plus grand-chose et on
   // fait exploser la durée totale.
@@ -262,6 +314,13 @@ export async function runLlm(opts: LlmRunOpts): Promise<AuditAiResult> {
         // Réponse vide/malformée : on retry. On ne retry pas si c'est déjà
         // la dernière tentative — on retourne le fallback tel quel.
         continue
+      }
+      // Écriture cache uniquement sur résultat exploitable (score > 0, pas
+      // "Analyse indisponible"). Un fallback n'est pas persisté — le prochain
+      // audit retentera.
+      if (redis && !isFallbackResult(result) && (result.score_global ?? 0) > 0) {
+        redis.set(cacheKey, JSON.stringify(result), 'EX', LLM_CACHE_TTL_SEC)
+          .catch(err => logger.warn({ label, err: err.message }, 'Cache LLM : write failed'))
       }
       return result
     } catch (err) {

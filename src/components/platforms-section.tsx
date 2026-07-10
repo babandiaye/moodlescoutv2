@@ -1,12 +1,27 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { AcademicCapIcon, CheckIcon, XMarkIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline'
-import { Pagination } from './pagination'
-
-const ICON_INLINE = { width: 12, height: 12, verticalAlign: '-2px', display: 'inline-block' as const }
+import {
+  MagnifyingGlassIcon,
+  FunnelIcon,
+  ListBulletIcon,
+  Squares2X2Icon,
+  AcademicCapIcon,
+  PlusIcon,
+  PlayIcon,
+  EyeIcon,
+  EllipsisVerticalIcon,
+  CheckIcon,
+  XMarkIcon,
+  TrashIcon,
+  BuildingLibraryIcon,
+  ArrowPathIcon,
+  ArrowRightIcon,
+  ExclamationTriangleIcon,
+} from '@heroicons/react/24/outline'
+import { hueForPlatform, type PlatformHue } from '@/lib/platform-hue'
 
 type Platform = {
   id: string
@@ -15,6 +30,8 @@ type Platform = {
   version: string
   isActive: boolean
   createdAt: Date | string
+  nbAudits: number
+  nbCoursesAudited: number
 }
 
 type Stats = {
@@ -36,30 +53,54 @@ type Stats = {
   cached: boolean
 }
 
-type Props = {
-  initial: Platform[]
-}
+type StatusFilter = 'all' | 'active' | 'inactive'
+type VersionFilter = 'all' | '4' | '5'
+type ViewMode = 'list' | 'grid'
+type TestState = 'loading' | { ok: true; sitename?: string; release?: string; latencyMs: number } | { ok: false; error: string }
+type StatsState = 'loading' | { error: string } | Stats
+
+type Props = { initial: Platform[] }
 
 export function PlatformsSection({ initial }: Props) {
   const router = useRouter()
   const [platforms, setPlatforms] = useState<Platform[]>(initial)
-  const [form, setForm] = useState({ name: '', url: '', token: '', version: '4' })
-  const [showToken, setShowToken] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<string | null>(null)
-  const [testing, setTesting] = useState<Record<string, 'loading' | { ok: true; sitename?: string; release?: string; latencyMs: number } | { ok: false; error: string }>>({})
-  type StatsState = 'loading' | { error: string } | Stats
-  const [stats, setStats] = useState<Record<string, StatsState | undefined>>({})
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [versionFilter, setVersionFilter] = useState<VersionFilter>('all')
+  const [view, setView] = useState<ViewMode>('list')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
-  useEffect(() => { setPage(1) }, [pageSize])
-  const paged = useMemo(
-    () => platforms.slice((page - 1) * pageSize, page * pageSize),
-    [platforms, page, pageSize],
-  )
+  const [testing, setTesting] = useState<Record<string, TestState>>({})
+  const [stats, setStats] = useState<Record<string, StatsState | undefined>>({})
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  useEffect(() => { setPage(1) }, [search, statusFilter, versionFilter, pageSize])
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return platforms.filter(p => {
+      if (statusFilter === 'active' && !p.isActive) return false
+      if (statusFilter === 'inactive' && p.isActive) return false
+      if (versionFilter !== 'all' && p.version !== versionFilter) return false
+      if (!q) return true
+      return p.name.toLowerCase().includes(q) || p.url.toLowerCase().includes(q)
+    })
+  }, [platforms, search, statusFilter, versionFilter])
+
+  const total = filtered.length
+  const nbPages = Math.max(1, Math.ceil(total / pageSize))
+  const paged = filtered.slice((page - 1) * pageSize, page * pageSize)
+
+  const activeFilterCount =
+    (statusFilter !== 'all' ? 1 : 0) +
+    (versionFilter !== 'all' ? 1 : 0) +
+    (search.trim() ? 1 : 0)
+
   const pagedIds = paged.map(p => p.id)
   const allPagedSelected = pagedIds.length > 0 && pagedIds.every(id => selected.has(id))
   const somePagedSelected = pagedIds.some(id => selected.has(id))
@@ -67,8 +108,7 @@ export function PlatformsSection({ initial }: Props) {
   const toggleOne = (id: string) => {
     setSelected(prev => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+      if (next.has(id)) next.delete(id); else next.add(id)
       return next
     })
   }
@@ -82,8 +122,10 @@ export function PlatformsSection({ initial }: Props) {
     })
   }
 
+  const clearMessages = () => { setError(null); setSuccess(null) }
+
   const handleToggleActive = async (p: Platform) => {
-    setError(null)
+    clearMessages()
     const newVal = !p.isActive
     try {
       const res = await fetch(`/api/moodle-platforms/${p.id}`, {
@@ -93,8 +135,8 @@ export function PlatformsSection({ initial }: Props) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setPlatforms(ps => ps.map(x => (x.id === p.id ? { ...x, isActive: newVal } : x)))
-      setSuccess(`Plateforme « ${p.name} » ${newVal ? 'activée' : 'désactivée'}`)
+      setPlatforms(ps => ps.map(x => x.id === p.id ? { ...x, isActive: newVal } : x))
+      setSuccess(`« ${p.name} » ${newVal ? 'activée' : 'désactivée'}`)
       router.refresh()
     } catch (err) {
       setError((err as Error).message)
@@ -102,8 +144,7 @@ export function PlatformsSection({ initial }: Props) {
   }
 
   const handleBulkToggle = async (isActive: boolean) => {
-    setError(null)
-    setSuccess(null)
+    clearMessages()
     const ids = Array.from(selected)
     if (ids.length === 0) return
     if (!confirm(`${isActive ? 'Activer' : 'Désactiver'} ${ids.length} plateforme(s) sélectionnée(s) ?`)) return
@@ -116,7 +157,7 @@ export function PlatformsSection({ initial }: Props) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setPlatforms(ps => ps.map(x => (selected.has(x.id) ? { ...x, isActive } : x)))
+      setPlatforms(ps => ps.map(x => selected.has(x.id) ? { ...x, isActive } : x))
       setSelected(new Set())
       setSuccess(`${data.updated ?? ids.length} plateforme(s) ${isActive ? 'activée(s)' : 'désactivée(s)'}`)
       router.refresh()
@@ -127,31 +168,16 @@ export function PlatformsSection({ initial }: Props) {
     }
   }
 
-  const handleClearCache = async (id: string, name: string) => {
-    if (!confirm(`Vider le cache Redis des appels Moodle Web Services pour « ${name} » ?\n\nUtile si vous venez de corriger quelque chose côté Moodle (token, capability, fonction ajoutée) — les prochaines requêtes iront directement sur Moodle sans attendre l'expiration du cache.`)) return
-    setError(null)
+  const handleClearCache = async (p: Platform) => {
+    if (!confirm(`Vider le cache Redis des appels WS pour « ${p.name} » ?`)) return
+    clearMessages()
     try {
-      const res = await fetch(`/api/moodle-platforms/${id}/cache`, { method: 'DELETE' })
+      const res = await fetch(`/api/moodle-platforms/${p.id}/cache`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setSuccess(`Cache WS de « ${name} » vidé (${data.deleted ?? 0} clés)`)
+      setSuccess(`Cache WS de « ${p.name} » vidé (${data.deleted ?? 0} clés)`)
     } catch (err) {
       setError((err as Error).message)
-    }
-  }
-
-  const handleStats = async (id: string, refresh = false) => {
-    setStats(s => ({ ...s, [id]: 'loading' }))
-    try {
-      const res = await fetch(`/api/moodle-platforms/${id}/stats${refresh ? '?refresh=1' : ''}`)
-      const data = await res.json()
-      if (!res.ok) {
-        setStats(s => ({ ...s, [id]: { error: data.error ?? `HTTP ${res.status}` } }))
-        return
-      }
-      setStats(s => ({ ...s, [id]: data }))
-    } catch (err) {
-      setStats(s => ({ ...s, [id]: { error: (err as Error).message } }))
     }
   }
 
@@ -170,14 +196,463 @@ export function PlatformsSection({ initial }: Props) {
     }
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    setSuccess(null)
-    if (!form.url || !form.token || !form.name) {
-      setError('Nom, URL et token sont requis')
-      return
+  const handleStats = async (id: string, refresh = false) => {
+    setStats(s => ({ ...s, [id]: 'loading' }))
+    try {
+      const res = await fetch(`/api/moodle-platforms/${id}/stats${refresh ? '?refresh=1' : ''}`)
+      const data = await res.json()
+      if (!res.ok) {
+        setStats(s => ({ ...s, [id]: { error: data.error ?? `HTTP ${res.status}` } }))
+        return
+      }
+      setStats(s => ({ ...s, [id]: data }))
+    } catch (err) {
+      setStats(s => ({ ...s, [id]: { error: (err as Error).message } }))
     }
+  }
+
+  const handleDelete = async (p: Platform) => {
+    if (!confirm(`Supprimer la plateforme « ${p.name} » ? Cette action est irréversible.`)) return
+    clearMessages()
+    try {
+      const res = await fetch(`/api/moodle-platforms/${p.id}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      setPlatforms(ps => ps.filter(x => x.id !== p.id))
+      setSuccess(`Plateforme « ${p.name} » supprimée`)
+      router.refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const handleCreated = (p: Platform) => {
+    setPlatforms(ps => [p, ...ps])
+    setShowAddModal(false)
+    setSuccess(`Plateforme « ${p.name} » ajoutée`)
+    router.refresh()
+  }
+
+  return (
+    <>
+      {/* CTA + filter bar */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button type="button" className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+          <PlusIcon width={16} height={16} /> Ajouter une plateforme
+        </button>
+      </div>
+
+      {/* Filter bar */}
+      <div className="filter-bar" style={{ marginBottom: 12 }}>
+        <div className="search-input">
+          <MagnifyingGlassIcon />
+          <input
+            type="search"
+            placeholder="Rechercher une plateforme…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as StatusFilter)} style={{ minWidth: 160 }}>
+          <option value="all">Tous les statuts</option>
+          <option value="active">Actives</option>
+          <option value="inactive">Désactivées</option>
+        </select>
+
+        <select value={versionFilter} onChange={e => setVersionFilter(e.target.value as VersionFilter)} style={{ minWidth: 160 }}>
+          <option value="all">Toutes versions</option>
+          <option value="4">Moodle 4.x</option>
+          <option value="5">Moodle 5.x</option>
+        </select>
+
+        {activeFilterCount > 0 && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ padding: '8px 12px', fontSize: 12 }}
+            onClick={() => { setSearch(''); setStatusFilter('all'); setVersionFilter('all') }}
+          >
+            <FunnelIcon width={14} height={14} /> Réinitialiser
+          </button>
+        )}
+
+        <div className="view-toggle" role="group" aria-label="Basculer vue">
+          <button type="button" className={`view-toggle-btn ${view === 'list' ? 'active' : ''}`} onClick={() => setView('list')} aria-label="Vue liste" aria-pressed={view === 'list'}>
+            <ListBulletIcon />
+          </button>
+          <button type="button" className={`view-toggle-btn ${view === 'grid' ? 'active' : ''}`} onClick={() => setView('grid')} aria-label="Vue grille" aria-pressed={view === 'grid'}>
+            <Squares2X2Icon />
+          </button>
+        </div>
+      </div>
+
+      {/* Banners */}
+      {error && (
+        <div className="error-banner" style={{ marginBottom: 12 }}>
+          <ExclamationTriangleIcon width={14} height={14} style={{ marginRight: 6 }} /> {error}
+        </div>
+      )}
+      {success && <div className="success-banner" style={{ marginBottom: 12 }}>{success}</div>}
+
+      {/* Bulk actions bar */}
+      {selected.size > 0 && (
+        <div className="bulk-bar">
+          <label className="bulk-check">
+            <input
+              type="checkbox"
+              checked={allPagedSelected}
+              ref={el => { if (el) el.indeterminate = !allPagedSelected && somePagedSelected }}
+              onChange={togglePage}
+            />
+            <span>{selected.size} sélectionnée(s)</span>
+          </label>
+          <div className="bulk-actions">
+            <button type="button" className="btn btn-success btn-sm" disabled={bulkBusy} onClick={() => handleBulkToggle(true)}>
+              <CheckIcon width={12} height={12} /> Activer
+            </button>
+            <button type="button" className="btn btn-danger btn-sm" disabled={bulkBusy} onClick={() => handleBulkToggle(false)}>
+              <XMarkIcon width={12} height={12} /> Désactiver
+            </button>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSelected(new Set())} disabled={bulkBusy}>
+              Réinitialiser
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Count line */}
+      <div style={{ fontSize: 13, color: 'var(--text2)', margin: '4px 4px 12px' }}>
+        {total} configuration{total > 1 ? 's' : ''}
+      </div>
+
+      {/* List / grid */}
+      {total === 0 ? (
+        <div className="card">
+          <div className="empty-state">
+            {activeFilterCount > 0 ? (
+              <>Aucune plateforme ne correspond aux filtres.</>
+            ) : (
+              <>Aucune plateforme configurée. Cliquez sur <strong>Ajouter une plateforme</strong>.</>
+            )}
+          </div>
+        </div>
+      ) : view === 'list' ? (
+        <div className="platform-list-v2">
+          {paged.map(p => (
+            <PlatformListRow
+              key={p.id}
+              p={p}
+              selected={selected.has(p.id)}
+              onToggleSelect={() => toggleOne(p.id)}
+              testing={testing[p.id]}
+              onTest={() => handleTest(p.id)}
+              statsState={stats[p.id]}
+              onStats={() => handleStats(p.id)}
+              onStatsRefresh={() => handleStats(p.id, true)}
+              onToggleActive={() => handleToggleActive(p)}
+              onClearCache={() => handleClearCache(p)}
+              onDelete={() => handleDelete(p)}
+              menuOpen={openMenu === p.id}
+              onMenuToggle={() => setOpenMenu(m => m === p.id ? null : p.id)}
+              onMenuClose={() => setOpenMenu(null)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="platform-grid-v2">
+          {paged.map(p => (
+            <PlatformGridCard
+              key={p.id}
+              p={p}
+              testing={testing[p.id]}
+              onTest={() => handleTest(p.id)}
+              onStats={() => handleStats(p.id)}
+              onToggleActive={() => handleToggleActive(p)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Pagination */}
+      {total > 0 && (
+        <div className="platform-pagination">
+          <div style={{ fontSize: 12, color: 'var(--text2)' }}>
+            {total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} sur {total} configuration{total > 1 ? 's' : ''}
+          </div>
+          <div className="pagination-nav">
+            <button type="button" className="pag-btn" disabled={page === 1} onClick={() => setPage(page - 1)}>‹</button>
+            {pageNumbers(page, nbPages).map((n, i) =>
+              n === '…' ? (
+                <span key={`e${i}`} className="pag-ellipsis">…</span>
+              ) : (
+                <button key={n} type="button" className={`pag-btn ${n === page ? 'active' : ''}`} onClick={() => setPage(n)}>{n}</button>
+              ),
+            )}
+            <button type="button" className="pag-btn" disabled={page >= nbPages} onClick={() => setPage(page + 1)}>›</button>
+          </div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text2)' }}>
+            <span>Par page</span>
+            <select
+              value={pageSize}
+              onChange={e => setPageSize(Number(e.target.value))}
+              style={{ padding: '4px 8px', border: '1px solid var(--border2)', borderRadius: 6, fontSize: 12 }}
+            >
+              {[5, 10, 25, 50].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Add modal */}
+      {showAddModal && (
+        <AddPlatformModal
+          onClose={() => setShowAddModal(false)}
+          onCreated={handleCreated}
+        />
+      )}
+    </>
+  )
+}
+
+// ─── Ligne plateforme (vue liste) ──────────────────────────────
+
+function PlatformListRow({
+  p, selected, onToggleSelect, testing, onTest, statsState, onStats, onStatsRefresh,
+  onToggleActive, onClearCache, onDelete, menuOpen, onMenuToggle, onMenuClose,
+}: {
+  p: Platform
+  selected: boolean
+  onToggleSelect: () => void
+  testing?: TestState
+  onTest: () => void
+  statsState?: StatsState
+  onStats: () => void
+  onStatsRefresh: () => void
+  onToggleActive: () => void
+  onClearCache: () => void
+  onDelete: () => void
+  menuOpen: boolean
+  onMenuToggle: () => void
+  onMenuClose: () => void
+}) {
+  const hue: PlatformHue = hueForPlatform(p.name)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onMenuClose()
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [menuOpen, onMenuClose])
+
+  const isStatsLoading = statsState === 'loading'
+  const statsObj = statsState && statsState !== 'loading' && !('error' in statsState) ? statsState : null
+  const statsErr = statsState && statsState !== 'loading' && 'error' in statsState ? statsState.error : null
+  const t = testing && testing !== 'loading' ? testing : null
+
+  return (
+    <div className={`platform-row-v2 ${p.isActive ? '' : 'is-inactive'}`}>
+      <div className="platform-row-main">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelect}
+          aria-label={`Sélectionner ${p.name}`}
+          className="platform-row-check"
+        />
+
+        <div className={`platform-row-icon hue-${hue}`}>
+          <AcademicCapIcon />
+        </div>
+
+        <div className="platform-row-name-block">
+          <div className="platform-row-name-row">
+            <span className="platform-row-name">{p.name}</span>
+            <span className={`platform-row-code hue-${hue}`}>{p.name}</span>
+          </div>
+          <div className="platform-row-url mono">{p.url}</div>
+        </div>
+
+        <div className="platform-row-col">
+          <span className="platform-row-col-value">Moodle {p.version}.x</span>
+          <span className="platform-row-col-label">Plateforme</span>
+        </div>
+
+        <div className="platform-row-col">
+          <span className="platform-row-col-value">
+            {p.nbAudits} audit{p.nbAudits > 1 ? 's' : ''}
+          </span>
+          <span className="platform-row-col-label">{p.nbCoursesAudited} cours audités</span>
+        </div>
+
+        <div className="platform-row-status-block">
+          <span className={`platform-status-pill ${p.isActive ? 'active' : 'disabled'}`}>
+            <span className="dot" /> {p.isActive ? 'Actif' : 'Désactivé'}
+          </span>
+          <span className="platform-row-since">Depuis {formatDate(p.createdAt)}</span>
+        </div>
+
+        <div className="platform-row-actions">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onTest} disabled={testing === 'loading'}>
+            <PlayIcon width={12} height={12} /> {testing === 'loading' ? '…' : 'Tester'}
+          </button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onStats} disabled={isStatsLoading}>
+            <EyeIcon width={12} height={12} /> {isStatsLoading ? '…' : 'Détails'}
+          </button>
+          <div ref={menuRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className="icon-menu-btn"
+              onClick={onMenuToggle}
+              aria-label="Plus d'actions"
+              aria-expanded={menuOpen}
+            >
+              <EllipsisVerticalIcon width={18} height={18} />
+            </button>
+            {menuOpen && (
+              <div className="platform-menu-dropdown">
+                <Link href={`/plateformes/${p.id}`} className="platform-menu-item">
+                  <ArrowRightIcon width={14} height={14} /> Explorer
+                </Link>
+                <button type="button" className="platform-menu-item" onClick={() => { onClearCache(); onMenuClose() }}>
+                  <ArrowPathIcon width={14} height={14} /> Vider cache
+                </button>
+                <button type="button" className="platform-menu-item" onClick={() => { onToggleActive(); onMenuClose() }}>
+                  {p.isActive ? (
+                    <><XMarkIcon width={14} height={14} /> Désactiver</>
+                  ) : (
+                    <><CheckIcon width={14} height={14} /> Activer</>
+                  )}
+                </button>
+                <button type="button" className="platform-menu-item danger" onClick={() => { onDelete(); onMenuClose() }}>
+                  <TrashIcon width={14} height={14} /> Supprimer
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Test result banner */}
+      {t && (
+        <div className={`platform-row-test-result ${t.ok ? 'ok' : 'ko'}`}>
+          {t.ok ? (
+            <><CheckIcon width={13} height={13} /> {t.sitename || 'OK'} {t.release ? `(${t.release})` : ''} · {t.latencyMs}ms</>
+          ) : (
+            <><XMarkIcon width={13} height={13} /> {String(t.error).slice(0, 180)}</>
+          )}
+        </div>
+      )}
+
+      {/* Stats panel */}
+      {(isStatsLoading || statsErr || statsObj) && (
+        <div className="platform-row-stats">
+          {isStatsLoading && <div style={{ fontSize: 12, color: 'var(--text2)' }}>⏳ Récupération…</div>}
+          {statsErr && (
+            <div style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <XMarkIcon width={13} height={13} /> {statsErr}
+            </div>
+          )}
+          {statsObj && (
+            <>
+              <div className="platform-stats-grid">
+                <StatChip label="Site" value={statsObj.sitename ?? '—'} />
+                <StatChip label="Version" value={statsObj.release?.split(' ')[0] ?? '—'} hint={statsObj.release ?? undefined} />
+                <StatChip
+                  label="Utilisateurs"
+                  value={statsObj.nbUsers !== null ? statsObj.nbUsers.toLocaleString('fr-FR') : 'n/a'}
+                  variant={statsObj.nbUsers === null ? 'warn' : undefined}
+                />
+                <StatChip
+                  label="Compte du token"
+                  value={statsObj.tokenUsername ?? '—'}
+                  hint={statsObj.tokenIsAdmin ? 'admin Moodle' : 'non-admin'}
+                  mono
+                />
+              </div>
+              <div className="platform-stats-footer">
+                <span>
+                  {new Date(statsObj.computedAt).toLocaleString('fr-FR')} · {Math.round(statsObj.durationMs)}ms
+                  {statsObj.cached ? ' · cache' : ''}
+                </span>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={onStatsRefresh}>
+                  <ArrowPathIcon width={11} height={11} /> Recalculer
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Carte plateforme (vue grille) ─────────────────────────────
+
+function PlatformGridCard({
+  p, testing, onTest, onStats, onToggleActive,
+}: {
+  p: Platform
+  testing?: TestState
+  onTest: () => void
+  onStats: () => void
+  onToggleActive: () => void
+}) {
+  const hue = hueForPlatform(p.name)
+  return (
+    <div className={`platform-tile ${p.isActive ? '' : 'is-inactive'}`}>
+      <div className="platform-tile-head">
+        <div className={`platform-row-icon hue-${hue}`}><AcademicCapIcon /></div>
+        <div className="platform-tile-name-block">
+          <div className="platform-row-name">{p.name}</div>
+          <div className="platform-row-url mono">{p.url}</div>
+        </div>
+      </div>
+      <div className="platform-tile-meta">
+        <span>Moodle {p.version}.x</span>
+        <span className={`course-status-pill ${p.isActive ? 'visible' : 'hidden'}`}>
+          <span className="dot" /> {p.isActive ? 'Actif' : 'Désactivé'}
+        </span>
+      </div>
+      <div className="platform-tile-metrics">
+        <div><span className="course-side-label">Audits</span><span className="course-side-num">{p.nbAudits}</span></div>
+        <div><span className="course-side-label">Cours audités</span><span className="course-side-num">{p.nbCoursesAudited}</span></div>
+      </div>
+      <div className="platform-tile-actions">
+        <button type="button" className="btn btn-secondary btn-sm" onClick={onTest} disabled={testing === 'loading'}>
+          <PlayIcon width={12} height={12} /> Tester
+        </button>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={onStats}>
+          <EyeIcon width={12} height={12} /> Détails
+        </button>
+        <button type="button" className={`btn btn-sm ${p.isActive ? 'btn-secondary' : 'btn-success'}`} onClick={onToggleActive}>
+          {p.isActive ? 'Désactiver' : 'Activer'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Modal ajouter ─────────────────────────────────────────────
+
+function AddPlatformModal({
+  onClose, onCreated,
+}: {
+  onClose: () => void
+  onCreated: (p: Platform) => void
+}) {
+  const [form, setForm] = useState({ name: '', url: '', token: '', version: '4' })
+  const [showToken, setShowToken] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErr(null)
+    if (!form.name || !form.url || !form.token) { setErr('Nom, URL et token sont requis'); return }
     setSubmitting(true)
     try {
       const res = await fetch('/api/moodle-platforms', {
@@ -187,665 +662,126 @@ export function PlatformsSection({ initial }: Props) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setPlatforms(p => [data.platform, ...p])
-      setForm({ name: '', url: '', token: '', version: '4' })
-      setSuccess(`Plateforme « ${data.platform.name} » ajoutée`)
-      router.refresh()
-    } catch (err) {
-      setError((err as Error).message)
+      onCreated({ ...data.platform, nbAudits: 0, nbCoursesAudited: 0 })
+    } catch (e) {
+      setErr((e as Error).message)
     } finally {
       setSubmitting(false)
     }
   }
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Supprimer la plateforme « ${name} » ?`)) return
-    setError(null)
-    try {
-      const res = await fetch(`/api/moodle-platforms/${id}`, { method: 'DELETE' })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
-      setPlatforms(p => p.filter(x => x.id !== id))
-      router.refresh()
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
   return (
-    <div className="card">
-      <div className="card-header">
-        <span className="card-title">
-          <AcademicCapIcon className="card-icon" /> Plateformes Moodle
-        </span>
-        <span className="badge badge-info">{platforms.length} configurée(s)</span>
-      </div>
-      <div className="card-body">
-        {error && <div className="error-banner">{error}</div>}
-        {success && <div className="success-banner">{success}</div>}
-
-        {platforms.length > 0 && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              flexWrap: 'wrap',
-              padding: '8px 10px',
-              marginBottom: 8,
-              background: 'var(--surface2)',
-              borderRadius: 6,
-              fontSize: 12,
-            }}
-          >
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={allPagedSelected}
-                ref={el => {
-                  if (el) el.indeterminate = !allPagedSelected && somePagedSelected
-                }}
-                onChange={togglePage}
-              />
-              <span style={{ color: 'var(--text2)' }}>
-                {selected.size > 0
-                  ? `${selected.size} sélectionnée(s)`
-                  : 'Tout sélectionner (page)'}
-              </span>
-            </label>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className="btn btn-success"
-                style={{ fontSize: 11, padding: '4px 10px' }}
-                disabled={selected.size === 0 || bulkBusy}
-                onClick={() => handleBulkToggle(true)}
-              >
-                <CheckIcon style={ICON_INLINE} /> Activer sélection
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                style={{ fontSize: 11, padding: '4px 10px' }}
-                disabled={selected.size === 0 || bulkBusy}
-                onClick={() => handleBulkToggle(false)}
-              >
-                <XMarkIcon style={ICON_INLINE} /> Désactiver sélection
-              </button>
-              {selected.size > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ fontSize: 11, padding: '4px 10px' }}
-                  onClick={() => setSelected(new Set())}
-                  disabled={bulkBusy}
-                >
-                  Réinitialiser
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {platforms.length > 0 && (
-          <div className="platform-list">
-            {paged.map(p => {
-              const s = stats[p.id]
-              const isStatsLoading = s === 'loading'
-              const statsObj = s && s !== 'loading' && !('error' in s) ? (s as Stats) : null
-              const statsErr = s && s !== 'loading' && 'error' in s ? s.error : null
-              const isChecked = selected.has(p.id)
-              return (
-                <div
-                  key={p.id}
-                  className="platform-item"
-                  style={{
-                    flexDirection: 'column',
-                    alignItems: 'stretch',
-                    opacity: p.isActive ? 1 : 0.7,
-                    borderLeft: p.isActive ? undefined : '3px solid var(--danger)',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                    <div className="platform-info" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleOne(p.id)}
-                        aria-label={`Sélectionner ${p.name}`}
-                        style={{ cursor: 'pointer' }}
-                      />
-                      <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <span className="platform-name">{p.name}</span>
-                        <span className="badge badge-neutral">Moodle {p.version}.x</span>
-                        {p.isActive ? (
-                          <span className="badge badge-success">
-                            <CheckIcon style={ICON_INLINE} /> Active
-                          </span>
-                        ) : (
-                          <span className="badge badge-danger">
-                            <XMarkIcon style={ICON_INLINE} /> Désactivée
-                          </span>
-                        )}
-                        {testing[p.id] && testing[p.id] !== 'loading' && (() => {
-                          const t = testing[p.id] as { ok: boolean; sitename?: string; release?: string; latencyMs?: number; error?: string }
-                          return t.ok ? (
-                            <span className="badge badge-success">
-                              <CheckIcon style={ICON_INLINE} /> {t.sitename || 'OK'} {t.release ? `(${t.release})` : ''} · {t.latencyMs}ms
-                            </span>
-                          ) : (
-                            <span className="badge badge-danger">
-                              <XMarkIcon style={ICON_INLINE} /> {String(t.error).slice(0, 80)}
-                            </span>
-                          )
-                        })()}
-                      </div>
-                      <span className="platform-url">{p.url}</span>
-                      </div>
-                    </div>
-                    <div className="platform-actions">
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => handleTest(p.id)}
-                        disabled={testing[p.id] === 'loading'}
-                      >
-                        {testing[p.id] === 'loading' ? '…' : 'Tester'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => handleStats(p.id)}
-                        disabled={isStatsLoading}
-                        title="Inventaire de la plateforme (cours, utilisateurs uniques, enseignants, tuteurs)"
-                      >
-                        {isStatsLoading ? '…' : 'Détails'}
-                      </button>
-                      <Link
-                        href={`/plateformes/${p.id}`}
-                        className="btn btn-secondary"
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        title="Explorer l'arbre catégoriel de cette plateforme (filière → niveau → UE → cours)"
-                      >
-                        Explorer
-                      </Link>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => handleClearCache(p.id, p.name)}
-                        title="Vider le cache Redis des appels Moodle Web Services pour cette plateforme"
-                      >
-                        Vider cache
-                      </button>
-                      <button
-                        type="button"
-                        className={`btn ${p.isActive ? 'btn-secondary' : 'btn-success'}`}
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => handleToggleActive(p)}
-                        title={
-                          p.isActive
-                            ? 'Cacher cette plateforme aux non-admins (audits + cours associés masqués)'
-                            : 'Réactiver cette plateforme pour tous les utilisateurs'
-                        }
-                      >
-                        {p.isActive ? 'Désactiver' : 'Activer'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-danger"
-                        style={{ fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => handleDelete(p.id, p.name)}
-                      >
-                        Supprimer
-                      </button>
-                    </div>
-                  </div>
-                  {(statsObj || statsErr || isStatsLoading) && (
-                    <div style={{ marginTop: 10, padding: 12, background: 'var(--surface)', borderRadius: 6, border: '1px solid var(--border)' }}>
-                      {isStatsLoading && (
-                        <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-                          ⏳ Récupération des informations…
-                        </div>
-                      )}
-                      {statsErr && (
-                        <div style={{ fontSize: 12, color: 'var(--danger)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <XMarkIcon style={{ width: 13, height: 13 }} /> {statsErr}
-                        </div>
-                      )}
-                      {statsObj && (
-                        <>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-                            <InfoBox label="URL" value={statsObj.url} mono />
-                            <InfoBox
-                              label="Site"
-                              value={statsObj.sitename ?? '—'}
-                            />
-                            <InfoBox
-                              label="Version Moodle"
-                              value={statsObj.release ? statsObj.release.split(' ')[0] : '—'}
-                              hint={statsObj.release ?? undefined}
-                            />
-                            <UsersInfoBox stats={statsObj} />
-                          </div>
-                          <TokenAccountLine stats={statsObj} />
-                          <div
-                            style={{
-                              marginTop: 8,
-                              fontSize: 11,
-                              color: 'var(--text3)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                            }}
-                          >
-                            <span>
-                              {new Date(statsObj.computedAt).toLocaleString('fr-FR')} ·{' '}
-                              {Math.round(statsObj.durationMs)}ms
-                              {statsObj.cached ? ' · depuis cache (TTL 10 min)' : ''}
-                            </span>
-                            <button
-                              type="button"
-                              className="btn btn-secondary"
-                              style={{ fontSize: 11, padding: '2px 8px' }}
-                              onClick={() => handleStats(p.id, true)}
-                            >
-                              ↻ Recalculer
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {platforms.length > 0 && (
-          <div style={{ marginTop: 12, marginBottom: 16, marginLeft: -20, marginRight: -20 }}>
-            <Pagination
-              page={page}
-              pageSize={pageSize}
-              total={platforms.length}
-              onPageChange={setPage}
-              onPageSizeChange={setPageSize}
-            />
-          </div>
-        )}
-
-        <form
-          onSubmit={handleSubmit}
-          style={{ borderTop: platforms.length ? '1px solid var(--border)' : 'none', paddingTop: platforms.length ? 16 : 0 }}
-        >
-          <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text2)', marginBottom: 12 }}>
-            Ajouter une plateforme
-          </p>
-          <div className="config-layout">
-            <div className="form-group">
-              <label className="form-label">Nom affiché</label>
-              <input
-                type="text"
-                placeholder="Moodle Principal"
-                value={form.name}
-                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">URL Moodle</label>
-              <input
-                type="url"
-                placeholder="https://moodle.unchk.edu.sn"
-                value={form.url}
-                onChange={e => setForm(f => ({ ...f, url: e.target.value }))}
-              />
-            </div>
-            <div className="form-group full">
-              <label className="form-label">Token Web Services</label>
-              <div className="input-row">
-                <input
-                  type={showToken ? 'text' : 'password'}
-                  placeholder="Token Moodle Web Services"
-                  value={form.token}
-                  onChange={e => setForm(f => ({ ...f, token: e.target.value }))}
-                />
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ whiteSpace: 'nowrap', fontSize: 12 }}
-                  onClick={() => setShowToken(s => !s)}
-                >
-                  {showToken ? 'Masquer' : 'Afficher'}
-                </button>
-              </div>
-              <span className="form-hint">
-                Moodle → Admin → Plugins → Web Services → Gérer les tokens. Le token est chiffré (AES-256-GCM) avant
-                stockage.
-              </span>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Version Moodle</label>
-              <div className="version-toggle">
-                {['4', '5'].map(v => (
-                  <button
-                    type="button"
-                    key={v}
-                    className={`version-btn ${form.version === v ? 'active' : ''}`}
-                    onClick={() => setForm(f => ({ ...f, version: v }))}
-                  >
-                    Moodle {v}.x
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={submitting || !form.name || !form.url || !form.token}
-          >
-            {submitting ? 'Validation…' : '+ Ajouter la plateforme'}
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ maxWidth: 540 }}>
+        <div className="modal-card-header">
+          <h3 className="modal-card-title">
+            <BuildingLibraryIcon width={18} height={18} /> Ajouter une plateforme Moodle
+          </h3>
+          <button type="button" className="modal-card-close" onClick={onClose} aria-label="Fermer">
+            <XMarkIcon width={18} height={18} />
           </button>
+        </div>
+
+        <form onSubmit={submit}>
+          {err && (
+            <div className="error-banner" style={{ marginBottom: 12 }}>
+              <ExclamationTriangleIcon width={14} height={14} style={{ marginRight: 6 }} /> {err}
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label">Nom affiché</label>
+            <input type="text" placeholder="P13 SEJA" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">URL Moodle</label>
+            <input type="url" placeholder="https://moodle.unchk.edu.sn" value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Token Web Services</label>
+            <div className="input-row">
+              <input
+                type={showToken ? 'text' : 'password'}
+                placeholder="Token Moodle Web Services"
+                value={form.token}
+                onChange={e => setForm(f => ({ ...f, token: e.target.value }))}
+              />
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowToken(s => !s)}>
+                {showToken ? 'Masquer' : 'Afficher'}
+              </button>
+            </div>
+            <span className="form-hint">
+              Moodle → Admin → Plugins → Web Services → Gérer les tokens. Le token est chiffré (AES-256-GCM) avant stockage.
+            </span>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Version Moodle</label>
+            <div className="version-toggle">
+              {['4', '5'].map(v => (
+                <button
+                  type="button"
+                  key={v}
+                  className={`version-btn ${form.version === v ? 'active' : ''}`}
+                  onClick={() => setForm(f => ({ ...f, version: v }))}
+                >
+                  Moodle {v}.x
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="modal-card-actions">
+            <button type="button" className="btn btn-secondary" onClick={onClose}>Annuler</button>
+            <button type="submit" className="btn btn-primary" disabled={submitting}>
+              {submitting ? 'Validation…' : 'Ajouter la plateforme'}
+            </button>
+          </div>
         </form>
       </div>
     </div>
   )
 }
 
-function InfoBox({
-  label,
-  value,
-  hint,
-  mono,
+// ─── Sous-composants ───────────────────────────────────────────
+
+function StatChip({
+  label, value, hint, mono, variant,
 }: {
   label: string
   value: string
   hint?: string
   mono?: boolean
+  variant?: 'warn'
 }) {
   return (
-    <div
-      style={{ background: 'var(--surface2)', padding: '8px 10px', borderRadius: 6 }}
-      title={hint}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          color: 'var(--text3)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          marginBottom: 4,
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: 'var(--brand)',
-          fontFamily: mono ? 'var(--mono)' : 'inherit',
-          wordBreak: 'break-all',
-          lineHeight: 1.3,
-        }}
+    <div className="platform-stat-chip" title={hint}>
+      <span className="platform-stat-chip-label">{label}</span>
+      <span
+        className="platform-stat-chip-value"
+        style={{ fontFamily: mono ? 'var(--mono)' : undefined, color: variant === 'warn' ? 'var(--warn)' : undefined }}
       >
         {value}
-      </div>
-    </div>
-  )
-}
-
-function UsersInfoBox({ stats }: { stats: Stats }) {
-  const total = stats.nbUsers
-  const breakdown = stats.usersBreakdown
-  const partial = stats.usersBreakdownPartial
-  const error = stats.usersError
-  const method = stats.usersMethod
-  const nbCourses = stats.usersNbCoursesScanned
-
-  // Trie le breakdown par valeur décroissante (méthode dominante en premier)
-  const sortedBreakdown = breakdown
-    ? Object.entries(breakdown).sort((a, b) => b[1] - a[1])
-    : []
-
-  const isAccessError = error?.toLowerCase().includes('accessexception')
-  const isInvalidToken = error?.toLowerCase().includes('invalidtoken')
-
-  // Détecte le sous-cas du fallback : `core_user_get_users` est EXPOSÉE
-  // (hasGetUsersFunction === true) mais le call a planté (timeout réseau,
-  // payload tronqué, exception Moodle...) → on est tombé en enrolment.
-  // Distinct du cas où la fonction n'est juste pas exposée du tout.
-  const isFallbackDueToTimeout = method === 'enrolment' && stats.hasGetUsersFunction
-
-  const hintParts: string[] = []
-  if (total !== null && method === 'enrolment' && isFallbackDueToTimeout) {
-    hintParts.push(
-      "Fallback enrolment : l'appel direct core_user_get_users a été tronqué côté Moodle (payload trop gros pour max_execution_time PHP).",
-      `Comptage distinct sur ${nbCourses ?? '?'} cours = ${total.toLocaleString('fr-FR')} users (≈99% du total réel).`,
-      "Pour un compte exact, augmenter côté Moodle :",
-      "  max_execution_time à 300s (php.ini ou .htaccess)",
-      "  memory_limit éventuellement à 512M",
-      "Le code reprendra la méthode directe automatiquement au prochain appel.",
-      "Erreur captée : " + error,
-    )
-  } else if (total !== null && method === 'enrolment') {
-    hintParts.push(
-      "Comptage via core_enrol_get_enrolled_users (fallback automatique).",
-      `Compte les users distincts inscrits dans ≥1 cours sur ${nbCourses ?? '?'} cours scannés.`,
-      "Limite : exclut les comptes admins/techniques jamais inscrits.",
-      "Pour un compte exact incluant tous les comptes, exposer core_user_get_users dans la liste des fonctions du service côté Moodle.",
-    )
-  }
-  if (total === null && isAccessError) {
-    hintParts.push(
-      "Aucune capability disponible pour compter les utilisateurs.",
-      "core_user_get_users ET core_enrol_get_enrolled_users sont refusés.",
-      "Pour corriger côté Moodle (l'une OU l'autre suffit) :",
-      "  Option A — moodle/user:viewdetails + moodle/user:viewalldetails (compte exact)",
-      "  Option B — moodle/course:viewparticipants (compte via inscriptions)",
-      "Erreur reçue : " + error,
-    )
-  } else if (total === null && isInvalidToken) {
-    hintParts.push("Token Web Services invalide ou expiré côté Moodle.")
-    hintParts.push("Erreur Moodle : " + error)
-  } else if (total === null && error) {
-    hintParts.push("Comptage indisponible. Erreur Moodle : " + error)
-  } else if (total === null) {
-    hintParts.push("Comptage indisponible.")
-  }
-  if (partial) {
-    hintParts.push("⚠ Calcul partiel : certains appels ont échoué.")
-    if (error) hintParts.push("Détail : " + error)
-  }
-  if (sortedBreakdown.length > 0 && method === 'auth-list') {
-    hintParts.push(
-      "Méthodes d'auth interrogées : " +
-        sortedBreakdown
-          .map(([m, c]) => `${m} = ${c.toLocaleString('fr-FR')}`)
-          .join(', '),
-    )
-  }
-  const hint = hintParts.join('\n') || undefined
-
-  return (
-    <div
-      style={{ background: 'var(--surface2)', padding: '8px 10px', borderRadius: 6 }}
-      title={hint}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          color: 'var(--text3)',
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          marginBottom: 4,
-        }}
-      >
-        Utilisateurs
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: total === null ? 'var(--warn)' : 'var(--brand)',
-          lineHeight: 1.3,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          flexWrap: 'wrap',
-        }}
-      >
-        {total !== null ? total.toLocaleString('fr-FR') : 'n/a'}
-        {total !== null && method === 'enrolment' && (
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 500,
-              padding: '1px 6px',
-              borderRadius: 4,
-              background: isFallbackDueToTimeout ? 'var(--warn-bg, #fff3cd)' : 'var(--info-bg, #d1ecf1)',
-              color: isFallbackDueToTimeout ? 'var(--warn, #856404)' : 'var(--info, #0c5460)',
-            }}
-            title={isFallbackDueToTimeout ? "Timeout serveur Moodle — fallback via inscriptions" : "Compte via les inscriptions de cours (fallback)"}
-          >
-            {isFallbackDueToTimeout ? 'timeout serveur Moodle' : 'inscrits'}
-          </span>
-        )}
-        {total === null && isAccessError && (
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 500,
-              padding: '1px 6px',
-              borderRadius: 4,
-              background: 'var(--warn-bg, #fff3cd)',
-              color: 'var(--warn, #856404)',
-            }}
-          >
-            permission Moodle manquante
-          </span>
-        )}
-        {total === null && isInvalidToken && (
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 500,
-              padding: '1px 6px',
-              borderRadius: 4,
-              background: 'var(--err-bg, #f8d7da)',
-              color: 'var(--err, #721c24)',
-            }}
-          >
-            token invalide
-          </span>
-        )}
-        {partial && (
-          <ExclamationTriangleIcon
-            style={{ width: 13, height: 13, color: 'var(--warn)' }}
-            aria-label="Calcul partiel"
-          />
-        )}
-      </div>
-      {sortedBreakdown.length > 0 && (
-        <div
-          style={{
-            marginTop: 3,
-            fontSize: 10,
-            color: 'var(--text3)',
-            fontFamily: 'var(--mono)',
-          }}
-        >
-          {sortedBreakdown
-            .map(([method, count]) => `${method} ${count.toLocaleString('fr-FR')}`)
-            .join(' · ')}
-        </div>
-      )}
-    </div>
-  )
-}
-
-/**
- * Affiche le compte Moodle qui détient le token webservice : utile pour
- * diagnostiquer les permissions (admin vs rôle dédié) et savoir si
- * `core_user_get_users` est exposé. Apparaît comme une ligne discrète sous
- * la grille principale des stats.
- */
-function TokenAccountLine({ stats }: { stats: Stats }) {
-  const { tokenUsername, tokenIsAdmin, hasGetUsersFunction, usersMethod } = stats
-  if (!tokenUsername) return null
-
-  const hint =
-    tokenIsAdmin && !hasGetUsersFunction
-      ? `Le compte du token est administrateur Moodle. Pour activer le compte exact des utilisateurs, ajouter core_user_get_users à la liste des fonctions exposées par le service webservice.\n\nAdministration → Web services → Services externes → [ton service] → Fonctions → Ajouter des fonctions → cocher "core_user_get_users".`
-      : !tokenIsAdmin
-      ? "Le token est rattaché à un compte non-admin. Bonne pratique de sécurité, mais limite les capabilities disponibles."
-      : hasGetUsersFunction
-      ? "Compte admin + core_user_get_users exposé → comptage direct opérationnel."
-      : undefined
-
-  return (
-    <div
-      style={{
-        marginTop: 8,
-        fontSize: 11,
-        color: 'var(--text3)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        flexWrap: 'wrap',
-      }}
-      title={hint}
-    >
-      <span style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        Compte du token :
       </span>
-      <span style={{ fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{tokenUsername}</span>
-      {tokenIsAdmin ? (
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 500,
-            padding: '1px 6px',
-            borderRadius: 4,
-            background: 'var(--ok-bg, #d4edda)',
-            color: 'var(--ok, #155724)',
-          }}
-        >
-          admin Moodle
-        </span>
-      ) : (
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 500,
-            padding: '1px 6px',
-            borderRadius: 4,
-            background: 'var(--surface2)',
-            color: 'var(--text3)',
-          }}
-        >
-          non-admin
-        </span>
-      )}
-      {tokenIsAdmin && !hasGetUsersFunction && usersMethod === 'enrolment' && (
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 500,
-            padding: '1px 6px',
-            borderRadius: 4,
-            background: 'var(--info-bg, #d1ecf1)',
-            color: 'var(--info, #0c5460)',
-          }}
-        >
-          ajouter core_user_get_users pour compte exact
-        </span>
-      )}
     </div>
   )
+}
+
+function pageNumbers(current: number, total: number): (number | '…')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const out: (number | '…')[] = [1]
+  if (current > 3) out.push('…')
+  const from = Math.max(2, current - 1)
+  const to = Math.min(total - 1, current + 1)
+  for (let n = from; n <= to; n++) out.push(n)
+  if (current < total - 2) out.push('…')
+  out.push(total)
+  return out
+}
+
+function formatDate(d: Date | string): string {
+  const date = typeof d === 'string' ? new Date(d) : d
+  return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date)
 }

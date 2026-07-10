@@ -23,7 +23,7 @@ export default async function AuditDetailPage({ params }: Ctx) {
     where: { id },
     include: {
       user: { select: { fullName: true } },
-      platform: { select: { name: true, url: true, version: true, isActive: true } },
+      platform: { select: { name: true, url: true, version: true, isActive: true, nbUsers: true, nbUsersUpdatedAt: true } },
       llmConfig: { select: { name: true, provider: true, model: true } },
       courseAudits: {
         orderBy: { createdAt: 'asc' },
@@ -68,6 +68,13 @@ export default async function AuditDetailPage({ params }: Ctx) {
     }))
 
   const hasResults = courses.length > 0
+
+  // Nombre d'utilisateurs uniques de la plateforme lu directement depuis
+  // moodle_platforms.nb_users (peuplé par cron nocturne à 3h + bouton Détails
+  // dans /configuration/plateformes). Affichage instant, plus de dépendance
+  // au cache Redis. `null` = pas encore calculé → UI affiche "—" avec hint.
+  const platformNbUsers = audit.platform.nbUsers
+  const platformNbUsersUpdatedAt = audit.platform.nbUsersUpdatedAt
 
   return (
     <div className="flex-col-16">
@@ -179,6 +186,8 @@ export default async function AuditDetailPage({ params }: Ctx) {
           courses={courses}
           errors={errors}
           isPartial={!isFinal}
+          platformNbUsers={platformNbUsers}
+          platformNbUsersUpdatedAt={platformNbUsersUpdatedAt?.toISOString() ?? null}
         />
       )}
     </div>

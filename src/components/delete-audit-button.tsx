@@ -2,13 +2,19 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { TrashIcon } from '@heroicons/react/24/outline'
 
 type Props = {
   id: string
   sessionKey: string
+  compact?: boolean
 }
 
-export function DeleteAuditButton({ id, sessionKey }: Props) {
+/**
+ * Bouton icône poubelle rouge, style rond. Confirmation avant suppression.
+ * `compact` : bouton 34x34 icône seulement (défaut). Sinon inclut le mot "Supprimer".
+ */
+export function DeleteAuditButton({ id, sessionKey, compact = true }: Props) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
 
@@ -28,15 +34,29 @@ export function DeleteAuditButton({ id, sessionKey }: Props) {
     }
   }
 
+  if (compact) {
+    return (
+      <button
+        type="button"
+        className="action-btn danger"
+        onClick={handleClick}
+        disabled={loading}
+        title="Supprimer l'audit"
+        aria-label="Supprimer l'audit"
+      >
+        <TrashIcon />
+      </button>
+    )
+  }
+
   return (
     <button
       type="button"
       className="btn btn-danger"
-      style={{ fontSize: 12, padding: '6px 10px' }}
       onClick={handleClick}
       disabled={loading}
     >
-      {loading ? '…' : 'Supprimer'}
+      <TrashIcon width={14} height={14} /> {loading ? 'Suppression…' : 'Supprimer'}
     </button>
   )
 }

@@ -23,6 +23,13 @@ type Props = {
   courses: Course[]
   errors: Array<{ courseId: number; shortname: string; fullname: string; error: string }>
   isPartial?: boolean
+  /**
+   * Utilisateurs uniques de la plateforme (source : moodle_platforms.nb_users,
+   * peuplé par cron nocturne + bouton Détails). `null` = pas encore calculé.
+   */
+  platformNbUsers?: number | null
+  /** ISO date du dernier refresh de nbUsers, ou null. */
+  platformNbUsersUpdatedAt?: string | null
 }
 
 function scoreClass(s: number) {
@@ -37,6 +44,8 @@ export function AuditResultsView({
   courses,
   errors,
   isPartial = false,
+  platformNbUsers = null,
+  platformNbUsersUpdatedAt = null,
 }: Props) {
   const [search, setSearch] = useState('')
   const [filterCategory, setFilterCategory] = useState<string>('all')
@@ -110,7 +119,6 @@ export function AuditResultsView({
             filtered.reduce((acc, r) => acc + Number(r.score_global ?? 0), 0) / filtered.length,
           )
         : 0,
-      totalInscrits: filtered.reduce((acc, r) => acc + Number(r.nb_inscrits ?? 0), 0),
       totalSequences: filtered.reduce((acc, r) => acc + Number(r.nb_sections ?? 0), 0),
       totalQuiz: filtered.reduce((acc, r) => acc + Number(r.nb_quiz ?? 0), 0),
       totalDevoirs: filtered.reduce((acc, r) => acc + Number(r.nb_devoirs ?? 0), 0),
@@ -145,9 +153,15 @@ export function AuditResultsView({
         <Stat n={stats.total} l="cours audités" />
         <Stat n={stats.avgScore} l="score moyen /100" />
         <Stat
-          n={stats.totalInscrits}
-          l="inscriptions cumulées"
-          hint="Somme des inscrits par cours — un même étudiant inscrit à 5 cours est compté 5 fois. Le nombre d'utilisateurs uniques est disponible dans les Détails plateforme."
+          n={platformNbUsers ?? '—'}
+          l="utilisateurs plateforme"
+          hint={
+            platformNbUsers === null
+              ? "Pas encore compté. Le refresh nocturne (3h) va le peupler, ou déclenche-le manuellement via Détails dans /configuration/plateformes."
+              : platformNbUsersUpdatedAt
+                ? `Utilisateurs uniques de la plateforme. Mesuré le ${new Date(platformNbUsersUpdatedAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}.`
+                : "Utilisateurs uniques de la plateforme."
+          }
         />
         <Stat n={stats.totalSequences} l="séquences total" />
         <Stat n={stats.totalQuiz} l="tests connaissance" />

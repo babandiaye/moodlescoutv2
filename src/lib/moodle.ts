@@ -841,6 +841,10 @@ export type MoodleUserCourse = {
   fullname: string
   visible: number
   enrolledusercount?: number
+  /** ID de la catégorie Moodle (à résoudre en nom via getCategoriesTree). */
+  category?: number
+  /** Timestamp Unix de création du cours, si Moodle le renvoie. */
+  timecreated?: number
   /** Rôles de l'utilisateur dans ce cours, si Moodle les renvoie. */
   roles?: Array<{ roleid: number; shortname: string; name: string }>
 }

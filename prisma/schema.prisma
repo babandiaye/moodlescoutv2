@@ -78,6 +78,21 @@ model MoodlePlatform {
   release     String?
   lastCheckAt DateTime? @map("last_check_at")
   isActive    Boolean   @default(true) @map("is_active")
+
+  // ─── Cache utilisateurs (rafraîchi par cron nocturne) ────────
+  // Le comptage live via getUsersTotalCount coûte 30-75s sur les grosses
+  // plateformes (P13 STN 10K users = 504 sur core_user_get_users, puis
+  // fallback enrolment sur ~400 cours). Refresh nocturne à 3h du matin :
+  //   scripts/refresh-platform-users.ts (via systemd timer)
+  // Bouton manuel côté admin dans /configuration/plateformes déclenche
+  // POST /api/moodle-platforms/[id]/refresh-users.
+  nbUsers          Int?      @map("nb_users")
+  nbUsersUpdatedAt DateTime? @map("nb_users_updated_at")
+  // Dernière méthode de comptage utilisée avec succès :
+  //  - 'auth-list'  : compte exact via core_user_get_users
+  //  - 'enrolment'  : borne basse via inscrits ≥1 cours (fallback)
+  usersMethod      String?   @map("users_method")
+
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 

@@ -327,11 +327,11 @@ export function NewAuditForm({
                 </select>
               </div>
               <div className="form-group">
-                <label className="form-label">Images des cours</label>
+                <label className="form-label">Analyse des images</label>
                 <label
                   style={{
                     display: 'flex',
-                    alignItems: 'center',
+                    alignItems: 'flex-start',
                     gap: 8,
                     cursor: 'pointer',
                     marginTop: 8,
@@ -341,9 +341,17 @@ export function NewAuditForm({
                     type="checkbox"
                     checked={form.extractImages}
                     onChange={e => setForm(f => ({ ...f, extractImages: e.target.checked }))}
-                    style={{ width: 16, height: 16, accentColor: 'var(--brand)' }}
+                    style={{ width: 16, height: 16, accentColor: 'var(--brand)', marginTop: 2 }}
                   />
-                  <span style={{ fontSize: 13 }}>Analyser les images (infos animateurs)</span>
+                  <span style={{ fontSize: 13, lineHeight: 1.4 }}>
+                    Analyser les images des cours (OCR bandeaux)
+                    <br />
+                    <span style={{ fontSize: 11, color: 'var(--text3)' }}>
+                      {form.extractImages
+                        ? 'Extrait nom enseignant / matière depuis les bandeaux de tête. Audit ~50 % plus lent.'
+                        : '⚡ Audit accéléré (~30-50 %). Les noms d\'enseignants sur bandeaux ne seront pas récupérés.'}
+                    </span>
+                  </span>
                 </label>
               </div>
               <div className="form-group full">
