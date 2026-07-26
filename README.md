@@ -63,7 +63,7 @@ Sur la machine cible (Debian/Ubuntu 22+ recommandé) :
 
 Accès :
 - Un utilisateur système (habituellement `root` ou `www-data`) qui lira `.env.local` et lancera les 2 processus Node.
-- Un enregistrement DNS pointant vers ton serveur (`preprod-moodlescoutv2.exemple.tld`).
+- Un enregistrement DNS pointant vers ton serveur (`moodlescout.unchk.sn`).
 - Un certificat TLS valide pour ce domaine (Let's Encrypt ou wildcard).
 
 ---
@@ -136,9 +136,9 @@ Dans ton Keycloak, realm dédié (ex: `unchk`) :
    - Client ID : `moodlescoutv2`
    - Access Type : **Confidential**
    - Standard flow : **On**
-   - Root URL : `https://ton-domaine.exemple.tld`
-   - Valid redirect URIs : `https://ton-domaine.exemple.tld/api/auth/callback/keycloak`
-   - Web origins : `https://ton-domaine.exemple.tld`
+   - Root URL : `https://moodlescout.unchk.sn`
+   - Valid redirect URIs : `https://moodlescout.unchk.sn/api/auth/callback/keycloak`
+   - Web origins : `https://moodlescout.unchk.sn`
 
 2. **Récupérer le secret** dans l'onglet `Credentials` du client → sera `KEYCLOAK_CLIENT_SECRET`.
 
@@ -147,7 +147,7 @@ Dans ton Keycloak, realm dédié (ex: `unchk`) :
    - `direction` — attribut custom LDAP/BD que tu veux utiliser pour promotion admin (voir `ADMIN_DIRECTION`)
    - `fullName` — nom complet (`${firstName} ${lastName}` typiquement)
 
-4. **Provider config** : noter `KEYCLOAK_ISSUER = https://keycloak.exemple.tld/realms/unchk`
+4. **Provider config** : noter `KEYCLOAK_ISSUER = https://senid.unchk.sn/realms/UNCHK`
 
 ### 6. Fichier `.env.local`
 
@@ -171,15 +171,15 @@ openssl rand -hex 32
 **Remplir** `.env.local` (extrait) :
 
 ```bash
-NEXTAUTH_URL=https://preprod-moodlescoutv2.exemple.tld
-AUTH_URL=https://preprod-moodlescoutv2.exemple.tld
+NEXTAUTH_URL=https://moodlescout.unchk.sn
+AUTH_URL=https://moodlescout.unchk.sn
 AUTH_TRUST_HOST=true
 AUTH_SECRET=<sortie openssl rand -base64 32>
 
 DATABASE_URL=postgresql://moodlescoutv2:MDP_PG@127.0.0.1:5432/moodlescoutv2
 REDIS_URL=redis://:MDP_REDIS@127.0.0.1:6379/2
 
-KEYCLOAK_ISSUER=https://keycloak.exemple.tld/realms/unchk
+KEYCLOAK_ISSUER=https://senid.unchk.sn/realms/UNCHK
 KEYCLOAK_CLIENT_ID=moodlescoutv2
 KEYCLOAK_CLIENT_SECRET=<secret onglet Credentials>
 
@@ -190,7 +190,7 @@ ADMIN_DIRECTION=DITSI
 ENCRYPTION_KEY=<sortie openssl rand -hex 32>
 
 # LLM par défaut (une seule instance à la fois — les autres se déclarent dans /configuration)
-OLLAMA_DEFAULT_URL=https://ollama.exemple.tld
+OLLAMA_DEFAULT_URL=https://fromager.unchk.sn
 OLLAMA_API_KEY=<bearer si présent, sinon vide>
 OLLAMA_DEFAULT_MODEL=gemma3:12b
 
@@ -332,16 +332,16 @@ sudo systemctl status moodlescoutv2 moodlescoutv2-worker
 ```nginx
 server {
     listen 80;
-    server_name preprod-moodlescoutv2.exemple.tld;
+    server_name moodlescout.unchk.sn;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name preprod-moodlescoutv2.exemple.tld;
+    server_name moodlescout.unchk.sn;
 
-    ssl_certificate     /etc/nginx/ssl/exemple.tld_cert.pem;
-    ssl_certificate_key /etc/nginx/ssl/exemple.tld.key;
+    ssl_certificate     /etc/nginx/ssl/unchk.sn_cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/star_unchk.sn.key;
 
     # ─── TLS hardening (Mozilla intermediate) ───────────
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -409,7 +409,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ### 11. Premier login + promotion admin
 
-1. Naviguer sur `https://preprod-moodlescoutv2.exemple.tld` → redirection Keycloak
+1. Naviguer sur `https://moodlescout.unchk.sn` → redirection Keycloak
 2. Se connecter avec un compte dont l'attribut `direction` = valeur de `ADMIN_DIRECTION` (`DITSI` par défaut) → **rôle admin auto-appliqué**
 3. Les autres users se connectant reçoivent `role=auditeur` par défaut. Un admin peut promouvoir dans `/users` (modal Détails → dropdown Rôle).
 
@@ -427,7 +427,7 @@ sudo systemctl status moodlescoutv2 moodlescoutv2-worker
 sudo systemctl list-timers | grep moodlescout
 
 # HTTP direct : doit renvoyer 200 (page login)
-curl -sI https://preprod-moodlescoutv2.exemple.tld/login
+curl -sI https://moodlescout.unchk.sn/login
 
 # Logs live
 sudo journalctl -u moodlescoutv2 -f
