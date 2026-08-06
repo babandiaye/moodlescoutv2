@@ -871,6 +871,10 @@ code { font-family: var(--mono); }
    ================================================================ */
 
 .provider-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+.provider-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 480px) {
+  .provider-grid-3 { grid-template-columns: 1fr; }
+}
 .provider-card {
   padding: 14px;
   border: 1.5px solid var(--border);
@@ -2906,10 +2910,17 @@ code { font-family: var(--mono); }
   .my-default-llm-select { min-width: 100%; }
 }
 
-/* Modal "Nouveau fournisseur IA" — largeur uniforme pour tous les champs.
-   Corrige un défaut visuel où Nom / Modèle apparaissaient plus étroits que
-   Clé API à cause de containers hétérogènes. Ici tous les .llm-modal-field
-   sont des .form-group qui étirent leur input à 100% du modal. */
+/* Modal "Nouveau fournisseur IA" — TOUS les inputs strictement identiques
+   (Nom, URL, Clé API, Modèle). Sans ces règles, Chrome et Firefox rendent
+   `<input type="password">` avec une police et une hauteur subtilement
+   différentes de `<input type="text">` (font-family: -webkit-body sur
+   password, spacing implicite pour l'icône reveal, etc.) → le champ Clé
+   API apparaît plus « lourd » que Nom. On force ici :
+     - même largeur (100%)
+     - même hauteur (40px)
+     - même font-family + font-size
+     - même padding + border-radius + line-height
+   Ça garantit l'homogénéité visuelle demandée. */
 .llm-create-modal .llm-modal-field {
   margin-bottom: 0;
   width: 100%;
@@ -2918,4 +2929,19 @@ code { font-family: var(--mono); }
 .llm-create-modal .llm-modal-field select {
   width: 100%;
   box-sizing: border-box;
+  height: 40px;
+  padding: 8px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+/* Le dropdown modèles reste en mono pour lisibilité du tag (ex: gpt-4o-mini)
+   mais garde la même hauteur que les autres inputs. */
+.llm-create-modal .llm-modal-field select {
+  font-family: var(--mono);
+  font-size: 12.5px;
 }

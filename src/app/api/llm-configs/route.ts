@@ -33,7 +33,7 @@ const nullableStr = z.preprocess(
 
 const createSchema = z.object({
   name: z.string().min(1).max(100),
-  provider: z.enum(['ollama', 'anthropic']),
+  provider: z.enum(['ollama', 'anthropic', 'openai']),
   apiUrl: nullableUrl.optional(),
   apiKey: nullableStr.optional(),
   model: z.string().min(1).default('gemma3:12b'),
@@ -100,6 +100,9 @@ export async function POST(req: NextRequest) {
 
   if (provider === 'anthropic' && !apiKey) {
     return NextResponse.json({ error: 'Clé API Anthropic requise' }, { status: 400 })
+  }
+  if (provider === 'openai' && !apiKey) {
+    return NextResponse.json({ error: 'Clé API OpenAI requise' }, { status: 400 })
   }
   if (provider === 'ollama' && !apiUrl) {
     return NextResponse.json({ error: 'URL Ollama requise' }, { status: 400 })

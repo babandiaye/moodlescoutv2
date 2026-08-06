@@ -160,6 +160,81 @@ export async function listOllamaModels(opts: {
   return models.map((m: any) => String(m.name ?? '')).filter(Boolean)
 }
 
+/**
+ * OpenAI — Chat Completions endpoint.
+ * Compatible avec les modèles vision (gpt-4o, gpt-4o-mini, gpt-4-turbo).
+ * Utilise `response_format: json_object` pour garantir un JSON parseable
+ * → pas besoin de retry sur JSON tronqué comme avec Ollama.
+ *
+ * Coût : facturé au compte OpenAI de l'utilisateur (sa clé, sa facture).
+ */
+export async function callOpenai(opts: {
+  apiKey: string
+  model: string
+  content: string
+  images: Buffer[]
+}): Promise<string> {
+  const { apiKey, model, content, images } = opts
+  const contentParts: any[] = [
+    { type: 'text', text: buildPrompt(content, images.length, 5000) },
+  ]
+  for (const img of images.slice(0, 5)) {
+    contentParts.push({
+      type: 'image_url',
+      image_url: { url: `data:${detectImageMime(img)};base64,${img.toString('base64')}` },
+    })
+  }
+
+  const res = await axios.post(
+    'https://api.openai.com/v1/chat/completions',
+    {
+      model,
+      messages: [{ role: 'user', content: contentParts }],
+      // JSON mode natif d'OpenAI — le prompt contient déjà "Réponds en JSON"
+      // donc l'API l'accepte. Pas de need de retry sur JSON invalide.
+      response_format: { type: 'json_object' },
+      max_tokens: 3000,
+      temperature: 0.1,
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      timeout: 180000,
+    },
+  )
+  const choices = res.data?.choices
+  if (Array.isArray(choices) && choices[0]?.message?.content) {
+    return String(choices[0].message.content)
+  }
+  return ''
+}
+
+/**
+ * Liste les modèles disponibles pour un compte OpenAI, filtré aux modèles
+ * texte/vision utilisables pour l'audit (gpt-*), sans embed/tts/whisper/dall-e.
+ */
+export async function listOpenaiModels(opts: { apiKey: string }): Promise<string[]> {
+  const res = await axios.get('https://api.openai.com/v1/models', {
+    headers: { Authorization: `Bearer ${opts.apiKey}` },
+    timeout: 10000,
+    validateStatus: () => true,
+  })
+  if (res.status !== 200) {
+    throw new Error(`OpenAI HTTP ${res.status} — ${res.data?.error?.message ?? 'échec authentification'}`)
+  }
+  const data = res.data?.data
+  if (!Array.isArray(data)) return []
+  // Filtre : seulement les modèles gpt-* utilisables en chat completions
+  // (exclut embeddings, tts, whisper, dall-e, moderation, davinci legacy…)
+  const EXCLUDE = /embedding|whisper|tts|dall-e|moderation|davinci-002|babbage-002|realtime|audio|search/i
+  return data
+    .map((m: { id?: string }) => String(m.id ?? ''))
+    .filter(id => /^gpt-/i.test(id) && !EXCLUDE.test(id))
+    .sort()
+}
+
 export async function callAnthropic(opts: {
   apiKey: string
   model: string
@@ -205,7 +280,7 @@ export async function callAnthropic(opts: {
 }
 
 export type LlmRunOpts = {
-  provider: 'ollama' | 'anthropic'
+  provider: 'ollama' | 'anthropic' | 'openai'
   apiUrl?: string | null
   apiKey?: string | null
   model: string
@@ -231,6 +306,16 @@ async function runLlmOnce(opts: LlmRunOpts): Promise<AuditAiResult> {
   if (opts.provider === 'anthropic') {
     if (!opts.apiKey) throw new Error('Clé Anthropic manquante')
     const raw = await callAnthropic({
+      apiKey: opts.apiKey,
+      model: opts.model,
+      content: opts.content,
+      images: opts.images,
+    })
+    return parseAiResponse(raw)
+  }
+  if (opts.provider === 'openai') {
+    if (!opts.apiKey) throw new Error('Clé OpenAI manquante')
+    const raw = await callOpenai({
       apiKey: opts.apiKey,
       model: opts.model,
       content: opts.content,

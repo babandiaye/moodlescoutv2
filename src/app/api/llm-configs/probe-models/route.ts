@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import axios from 'axios'
 import { requireAuth } from '@/lib/api-helpers'
-import { listOllamaModels } from '@/lib/llm'
+import { listOllamaModels, listOpenaiModels } from '@/lib/llm'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -23,7 +23,7 @@ export const dynamic = 'force-dynamic'
  *   400/401 pour les erreurs de requête
  */
 const schema = z.object({
-  provider: z.enum(['ollama', 'anthropic']),
+  provider: z.enum(['ollama', 'anthropic', 'openai']),
   apiUrl: z.string().url().optional().nullable(),
   apiKey: z.string().min(1).optional().nullable(),
 })
@@ -51,6 +51,14 @@ export async function POST(req: NextRequest) {
         apiUrl,
         apiKey: apiKey ?? undefined,
       })
+      return NextResponse.json({ ok: true, models })
+    }
+
+    if (provider === 'openai') {
+      if (!apiKey) {
+        return NextResponse.json({ ok: false, error: 'Clé API OpenAI requise' })
+      }
+      const models = await listOpenaiModels({ apiKey })
       return NextResponse.json({ ok: true, models })
     }
 

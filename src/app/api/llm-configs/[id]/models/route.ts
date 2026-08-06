@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { decrypt } from '@/lib/crypto'
 import { requireAuth } from '@/lib/api-helpers'
 import { canViewLlm } from '@/lib/llm-access'
-import { listOllamaModels } from '@/lib/llm'
+import { listOllamaModels, listOpenaiModels } from '@/lib/llm'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -35,6 +35,22 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
       logger.warn({ err: (err as Error).message, id }, 'Liste modèles Ollama échouée')
       return NextResponse.json(
         { error: `Impossible de joindre Ollama : ${(err as Error).message}` },
+        { status: 502 },
+      )
+    }
+  }
+
+  if (cfg.provider === 'openai') {
+    if (!apiKey) {
+      return NextResponse.json({ error: 'Clé API OpenAI manquante' }, { status: 400 })
+    }
+    try {
+      const models = await listOpenaiModels({ apiKey })
+      return NextResponse.json({ provider: 'openai', models })
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, id }, 'Liste modèles OpenAI échouée')
+      return NextResponse.json(
+        { error: `Impossible de joindre OpenAI : ${(err as Error).message}` },
         { status: 502 },
       )
     }

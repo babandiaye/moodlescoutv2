@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { decrypt } from '@/lib/crypto'
 import { requireAuth } from '@/lib/api-helpers'
 import { canViewLlm } from '@/lib/llm-access'
-import { listOllamaModels } from '@/lib/llm'
+import { listOllamaModels, listOpenaiModels } from '@/lib/llm'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -43,6 +43,25 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
         provider: 'ollama',
         modelsCount: models.length,
         configuredModelAvailable: hasModel,
+        configuredModel: cfg.model,
+        sampleModels: models.slice(0, 5),
+      })
+    }
+
+    if (cfg.provider === 'openai') {
+      if (!apiKey) {
+        return NextResponse.json(
+          { ok: false, error: 'Clé API OpenAI manquante' },
+          { status: 200 },
+        )
+      }
+      const models = await listOpenaiModels({ apiKey })
+      return NextResponse.json({
+        ok: true,
+        latencyMs: Date.now() - start,
+        provider: 'openai',
+        modelsCount: models.length,
+        configuredModelAvailable: models.includes(cfg.model),
         configuredModel: cfg.model,
         sampleModels: models.slice(0, 5),
       })

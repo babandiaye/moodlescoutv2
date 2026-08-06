@@ -28,6 +28,7 @@ enum AuditStatus {
 enum LlmProvider {
   ollama
   anthropic
+  openai
 }
 
 // Portée d'une config LLM :

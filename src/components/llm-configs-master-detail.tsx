@@ -22,7 +22,7 @@ import {
   ArrowPathIcon,
 } from '@heroicons/react/24/outline'
 
-type Provider = 'ollama' | 'anthropic'
+type Provider = 'ollama' | 'anthropic' | 'openai'
 type Scope = 'shared' | 'personal'
 type Role = 'admin' | 'enseignant' | 'lecteur'
 
@@ -1067,9 +1067,10 @@ function NewApiKeyForm({ onSave, onCancel }: { onSave: (v: string) => void; onCa
 // ─── Modal création ──────────────────────────────────────────
 
 /**
- * Filtre imposé selon la portée : pour les configs shared+Ollama (typiquement
- * l'infra UN-CHK partagée), on autorise uniquement les modèles gemma3* —
- * politique DITSI. Toutes les autres combinaisons montrent la liste complète.
+ * Filtre imposé selon la portée + provider :
+ *  - Ollama shared (infra UN-CHK) : uniquement modèles gemma3* (politique DITSI)
+ *  - OpenAI : on filtre déjà côté listOpenaiModels (gpt-* vision-capable)
+ *  - Anthropic : liste complète telle que renvoyée par l'API
  */
 function filterModelsForPolicy(
   provider: Provider,
@@ -1118,7 +1119,8 @@ function CreateModal({
 
   const isTestable =
     (form.provider === 'ollama' && !!form.apiUrl) ||
-    (form.provider === 'anthropic' && !!form.apiKey)
+    (form.provider === 'anthropic' && !!form.apiKey) ||
+    (form.provider === 'openai' && !!form.apiKey)
 
   const runTest = async () => {
     setTestState({ status: 'testing' })
@@ -1242,20 +1244,29 @@ function CreateModal({
 
           <div>
             <div className="form-label">Fournisseur</div>
-            <div className="provider-grid">
-              <div
-                className={`provider-card ${form.provider === 'ollama' ? 'active' : ''}`}
-                onClick={() => { setForm(f => ({ ...f, provider: 'ollama', model: '' })); resetTest() }}
-              >
-                <div className="provider-card-title">Ollama</div>
-                <div className="provider-card-sub">Auto-hébergé</div>
-              </div>
+            {/* 3 cartes : Anthropic + OpenAI côté perso, Ollama réservé au partagé
+                (l'auto-hébergé n'a de sens que pour la DITSI qui gère fromager). */}
+            <div className="provider-grid provider-grid-3">
               <div
                 className={`provider-card ${form.provider === 'anthropic' ? 'active' : ''}`}
                 onClick={() => { setForm(f => ({ ...f, provider: 'anthropic', model: '' })); resetTest() }}
               >
                 <div className="provider-card-title">Anthropic</div>
                 <div className="provider-card-sub">Claude API</div>
+              </div>
+              <div
+                className={`provider-card ${form.provider === 'openai' ? 'active' : ''}`}
+                onClick={() => { setForm(f => ({ ...f, provider: 'openai', model: '' })); resetTest() }}
+              >
+                <div className="provider-card-title">OpenAI</div>
+                <div className="provider-card-sub">ChatGPT API</div>
+              </div>
+              <div
+                className={`provider-card ${form.provider === 'ollama' ? 'active' : ''}`}
+                onClick={() => { setForm(f => ({ ...f, provider: 'ollama', model: '' })); resetTest() }}
+              >
+                <div className="provider-card-title">Ollama</div>
+                <div className="provider-card-sub">Auto-hébergé</div>
               </div>
             </div>
           </div>
@@ -1265,7 +1276,13 @@ function CreateModal({
             <input
               value={form.name}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              placeholder={form.provider === 'ollama' ? 'Ollama Fromager, Ollama Perso…' : 'Ma clé Anthropic, Claude Perso…'}
+              placeholder={
+                form.provider === 'ollama'
+                  ? 'Ollama Fromager, Ollama Perso…'
+                  : form.provider === 'openai'
+                    ? 'Ma clé OpenAI, ChatGPT Perso…'
+                    : 'Ma clé Anthropic, Claude Perso…'
+              }
             />
           </div>
 
@@ -1288,7 +1305,13 @@ function CreateModal({
               type="password"
               value={form.apiKey}
               onChange={e => { setForm(f => ({ ...f, apiKey: e.target.value })); resetTest() }}
-              placeholder={form.provider === 'anthropic' ? 'sk-ant-…' : 'Bearer token…'}
+              placeholder={
+                form.provider === 'anthropic'
+                  ? 'sk-ant-…'
+                  : form.provider === 'openai'
+                    ? 'sk-proj-… ou sk-…'
+                    : 'Bearer token…'
+              }
             />
           </div>
 
