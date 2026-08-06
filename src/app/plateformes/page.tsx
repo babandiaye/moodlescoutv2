@@ -11,7 +11,7 @@ import {
 import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { PlateformesGrid, type PlateformeCard } from '@/components/plateformes-grid'
-import { activePlatformFilter, isAdmin } from '@/lib/permissions'
+import { activePlatformFilter, canBrowsePlatform, isAdmin } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,6 +68,8 @@ export default async function PlateformesPage() {
   const session = await auth()
   if (!session?.user) redirect('/login')
   const user = session.user
+  // Enseignant : pas d'accès à l'explorateur plateformes (Mes cours suffit).
+  if (!canBrowsePlatform(user.role)) redirect('/me/courses')
 
   const [platforms, aggregates] = await Promise.all([
     prisma.moodlePlatform.findMany({

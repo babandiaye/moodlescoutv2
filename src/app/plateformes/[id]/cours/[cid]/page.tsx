@@ -19,7 +19,7 @@ type Ctx = { params: Promise<{ id: string; cid: string }> }
  * Affiche une timeline verticale : chaque ligne = un audit (score, delta, LLM,
  * date, statut) → cliquable vers la vue détail de cet audit-là.
  *
- * Le non-admin ne voit que les audits qui lui appartiennent (auditeur) ou tous
+ * Le non-admin ne voit que les audits qui lui appartiennent (enseignant) ou tous
  * s'il est lecteur/admin. Les audits sur plateforme désactivée sont masqués
  * aux non-admins (règle globale).
  */
@@ -39,7 +39,7 @@ export default async function CourseHistoryPage({ params }: Ctx) {
 
   // Restriction visibilité :
   //  - lecteur/admin : tous les audits sur ce cours
-  //  - auditeur : uniquement ses propres audits
+  //  - enseignant : uniquement ses propres audits
   const sessionsWhere = {
     platformId: id,
     ...(canViewAllAudits(session.user.role) ? {} : { userId: session.user.id }),

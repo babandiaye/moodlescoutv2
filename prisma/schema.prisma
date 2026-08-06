@@ -13,7 +13,7 @@ datasource db {
 
 enum UserRole {
   admin
-  auditeur
+  enseignant
   lecteur
 }
 
@@ -51,7 +51,7 @@ model User {
   // au premier login (DITSI -> admin, autres -> auditeur). Modifiable ensuite
   // manuellement par un admin sans risque d'écrasement au login suivant.
   direction         String?
-  role              UserRole  @default(auditeur)
+  role              UserRole  @default(enseignant)
   isActive          Boolean   @default(true) @map("is_active")
   lastLogin         DateTime? @map("last_login")
   createdAt         DateTime  @default(now()) @map("created_at")

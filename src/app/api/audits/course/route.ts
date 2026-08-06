@@ -126,7 +126,7 @@ async function postImpl(req: NextRequest) {
   if (!llm) return NextResponse.json({ error: 'Config LLM inconnue' }, { status: 404 })
   if (!llm.isActive) return NextResponse.json({ error: 'Fournisseur IA désactivé.' }, { status: 403 })
 
-  // 4) Restriction rôle "auditeur" : ne peut auditer que ses propres cours
+  // 4) Restriction rôle "enseignant" : ne peut auditer que ses propres cours
   //    (même règle que POST /api/audits — pas de bypass via cette nouvelle route).
   if (!isAdmin(a.user.role)) {
     try {

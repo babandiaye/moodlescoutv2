@@ -12,6 +12,10 @@ export default async function SingleCourseAuditPage() {
   const session = await auth()
   if (!session?.user) redirect('/login')
   if (!canLaunchAudit(session.user.role)) redirect('/audits')
+  // Enseignant : cette page permet d'auditer un cours ARBITRAIRE de la
+  // plateforme (choix libre via l'UI). L'enseignant ne peut auditer que
+  // SES propres cours, donc via /me/courses uniquement.
+  if (session.user.role === 'enseignant') redirect('/me/courses')
 
   const llmConfigs = await prisma.llmConfig.findMany({
     where: { isActive: true },

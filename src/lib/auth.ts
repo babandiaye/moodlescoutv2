@@ -81,7 +81,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           familyName:        (profile as { family_name?: string }).family_name ?? null,
           fullName:          profile.name ?? null,
           direction,
-          role:              isAdmin ? 'admin' : 'auditeur',
+          role:              isAdmin ? 'admin' : 'enseignant',
           lastLogin:         new Date(),
         },
       })

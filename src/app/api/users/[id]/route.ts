@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic'
 type Ctx = { params: Promise<{ id: string }> }
 
 const patchSchema = z.object({
-  role: z.enum(['admin', 'auditeur', 'lecteur']).optional(),
+  role: z.enum(['admin', 'enseignant', 'lecteur']).optional(),
   isActive: z.boolean().optional(),
 })
 

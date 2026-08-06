@@ -123,10 +123,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Fournisseur IA désactivé.' }, { status: 403 })
   }
 
-  // Restriction rôle "auditeur" : ne peut lancer un audit QUE sur ses propres
+  // Restriction rôle "enseignant" : ne peut lancer un audit QUE sur ses propres
   // cours (enseignant / tuteur sur la plateforme). L'admin garde le mode libre.
   //   - courseIds obligatoire
-  //   - chaque ID doit correspondre à un cours de l'auditeur sur cette plateforme
+  //   - chaque ID doit correspondre à un cours de l.enseignant sur cette plateforme
   // Vérifié côté serveur pour empêcher le bypass (client qui trafique la
   // requête pour auditer des cours hors périmètre).
   if (!isAdmin(a.user.role)) {
@@ -134,7 +134,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            'En tant qu\'auditeur, vous devez sélectionner des cours dans « Mes cours » avant de lancer un audit.',
+            'En tant qu\'enseignant, vous devez sélectionner des cours dans « Mes cours » avant de lancer un audit.',
         },
         { status: 403 },
       )

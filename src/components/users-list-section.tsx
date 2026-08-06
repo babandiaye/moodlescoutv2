@@ -21,13 +21,13 @@ type User = {
 
 const ROLE_LABELS: Record<UserRole, string> = {
   admin: 'Admin',
-  auditeur: 'Auditeur',
+  enseignant: 'Enseignant',
   lecteur: 'Lecteur',
 }
 
 const ROLE_BADGE_CLASS: Record<UserRole, string> = {
   admin: 'badge-success',
-  auditeur: 'badge-neutral',
+  enseignant: 'badge-neutral',
   lecteur: 'badge-info',
 }
 
@@ -95,7 +95,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
     () => ({
       total: users.length,
       admins: users.filter(u => u.role === 'admin').length,
-      auditeurs: users.filter(u => u.role === 'auditeur').length,
+      enseignants: users.filter(u => u.role === 'enseignant').length,
       lecteurs: users.filter(u => u.role === 'lecteur').length,
       actifs: users.filter(u => u.isActive).length,
       desactives: users.filter(u => !u.isActive).length,
@@ -147,7 +147,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             <span className="badge badge-info">{stats.total} comptes</span>
             <span className="badge badge-success">{stats.admins} admin(s)</span>
-            <span className="badge badge-neutral">{stats.auditeurs} auditeur(s)</span>
+            <span className="badge badge-neutral">{stats.enseignants} enseignant(s)</span>
             {stats.lecteurs > 0 && (
               <span className="badge badge-info">{stats.lecteurs} lecteur(s)</span>
             )}
@@ -173,7 +173,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
             >
               <option value="all">Tous rôles</option>
               <option value="admin">Admins uniquement</option>
-              <option value="auditeur">Auditeurs uniquement</option>
+              <option value="enseignant">Enseignants uniquement</option>
               <option value="lecteur">Lecteurs uniquement</option>
             </select>
           </div>
@@ -256,7 +256,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
                             }}
                           >
                             <option value="admin">Admin</option>
-                            <option value="auditeur">Auditeur</option>
+                            <option value="enseignant">Enseignant</option>
                             <option value="lecteur">Lecteur</option>
                           </select>
                           {u.isActive ? (
@@ -317,7 +317,7 @@ export function UsersListSection({ initial, currentUserId }: Props) {
             }}
           >
             ⓘ Les comptes sont créés automatiquement à la première connexion Keycloak. Le rôle initial dépend de la
-            direction (DITSI → admin, autres → auditeur). Vous pouvez ensuite ajuster manuellement ici. Vous ne pouvez
+            direction (DITSI → admin, autres → enseignant). Vous pouvez ensuite ajuster manuellement ici. Vous ne pouvez
             ni modifier votre propre rôle, ni désactiver votre propre compte.
           </div>
         </div>

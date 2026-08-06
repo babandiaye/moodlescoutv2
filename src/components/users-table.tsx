@@ -44,7 +44,7 @@ const PAGE_SIZES = [10, 25, 50] as const
 
 const ROLE_LABEL: Record<UserRole, string> = {
   admin: 'Admin',
-  auditeur: 'Auditeur',
+  enseignant: 'Enseignant',
   lecteur: 'Lecteur',
 }
 
@@ -127,7 +127,7 @@ export function UsersTable({ initial, currentUserId }: Props) {
             >
               <option value="all">Tous les rôles</option>
               <option value="admin">Administrateur</option>
-              <option value="auditeur">Auditeur</option>
+              <option value="enseignant">Enseignant</option>
               <option value="lecteur">Lecteur</option>
             </select>
 
@@ -605,7 +605,7 @@ function UserDetailsModal({
               }}
             >
               <option value="admin">Administrateur — accès complet</option>
-              <option value="auditeur">Auditeur — lance ses audits, gère les siens</option>
+              <option value="enseignant">Enseignant — audite ses propres cours</option>
               <option value="lecteur">Lecteur — lecture seule globale</option>
             </select>
             {isSelf && (

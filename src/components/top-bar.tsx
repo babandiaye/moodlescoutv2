@@ -19,7 +19,7 @@ type Props = {
 
 const ROLE_LABELS: Record<UserRole, string> = {
   admin: 'Administrateur',
-  auditeur: 'Auditeur',
+  enseignant: 'Enseignant',
   lecteur: 'Lecteur',
 }
 
@@ -66,7 +66,7 @@ export function TopBar({ fullName, role }: Props) {
       </div>
 
       <div className="topbar-actions">
-        {(role === 'admin' || role === 'auditeur') && <QuotaBadge />}
+        {(role === 'admin' || role === 'enseignant') && <QuotaBadge />}
 
         <button
           type="button"

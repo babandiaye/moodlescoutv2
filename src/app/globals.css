@@ -2056,7 +2056,7 @@ code { font-family: var(--mono); }
   font-weight: 600;
 }
 .role-pill.admin    { background: var(--success-light);      color: var(--success); }
-.role-pill.auditeur { background: var(--brand-light);        color: var(--brand); }
+.role-pill.enseignant { background: var(--brand-light);        color: var(--brand); }
 .role-pill.lecteur  { background: var(--accent-purple-soft); color: var(--accent-purple); }
 
 /* Pill statut compact avec dot coloré */

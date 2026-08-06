@@ -51,7 +51,7 @@ export default async function UsersPage() {
   // Stats globales
   const nbTotal = rows.length
   const nbAdmins = rows.filter(u => u.role === 'admin').length
-  const nbAuditeurs = rows.filter(u => u.role === 'auditeur').length
+  const nbEnseignants = rows.filter(u => u.role === 'enseignant').length
   const nbLecteurs = rows.filter(u => u.role === 'lecteur').length
   const nbDesactives = rows.filter(u => !u.isActive).length
 
@@ -82,7 +82,7 @@ export default async function UsersPage() {
       <div className="stats-row-mini" style={{ marginBottom: 24 }}>
         <StatUser icon={<UserGroupIcon />} color="blue"   n={nbTotal}      label="Comptes total"     pct={100} />
         <StatUser icon={<ShieldCheckIcon />} color="green"  n={nbAdmins}     label="Administrateurs"   pct={pct(nbAdmins)} />
-        <StatUser icon={<UserIcon />}        color="purple" n={nbAuditeurs}  label="Auditeurs"         pct={pct(nbAuditeurs)} />
+        <StatUser icon={<UserIcon />}        color="purple" n={nbEnseignants}  label="Enseignants"         pct={pct(nbEnseignants)} />
         <StatUser icon={<BookOpenIcon />}    color="orange" n={nbLecteurs}   label={nbLecteurs > 1 ? 'Lecteurs' : 'Lecteur'} pct={pct(nbLecteurs)} />
         <StatUser icon={<XCircleIcon />}     color="red"    n={nbDesactives} label={nbDesactives > 1 ? 'Désactivé(s)' : 'Désactivé(s)'} pct={pct(nbDesactives)} />
       </div>

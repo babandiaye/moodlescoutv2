@@ -24,6 +24,15 @@ export default async function NewAuditPage({ searchParams }: Props) {
     .split(',')
     .map(s => parseInt(s.trim(), 10))
     .filter(n => Number.isFinite(n) && n > 0)
+
+  // Enseignant : n'a le droit de lancer un audit QUE via "Auditer ce cours"
+  // depuis /me/courses (arrive avec platform + courseIds). Un accès direct
+  // à /audits/new sans courseIds signifie qu'il essaie de lancer un audit
+  // plateforme entière → redirection.
+  if (session.user.role === 'enseignant' && preselectedCourseIds.length === 0) {
+    redirect('/me/courses')
+  }
+
   const preselectedCategories = (sp.categories ?? '')
     .split(',')
     .map(s => s.trim())

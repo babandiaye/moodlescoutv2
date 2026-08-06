@@ -23,7 +23,18 @@ type Props = {
   role: UserRole
 }
 
-type NavGuard = 'adminOnly' | 'canLaunch'
+/**
+ * Politique visibilité des items :
+ *  - 'adminOnly'    : admin uniquement
+ *  - 'canLaunch'    : admin + enseignant (mais l'enseignant ne verra PAS
+ *                     l'entrée générique "Lancer un audit plateforme" ni
+ *                     "Analyser un cours" — voir 'hideFromEnseignant')
+ *  - 'hideFromEnseignant' : masqué à l'enseignant qui ne doit voir QUE
+ *                     Tableau de bord + Audits + Mes cours dans la sidebar.
+ *                     Il pourra lancer un audit uniquement depuis "Mes cours"
+ *                     via le bouton "Auditer ce cours" par ligne.
+ */
+type NavGuard = 'adminOnly' | 'canLaunch' | 'hideFromEnseignant'
 
 type NavItem = {
   href: string
@@ -42,13 +53,13 @@ type NavItem = {
 const NAV: NavItem[] = [
   { href: '/',              label: 'Tableau de bord',    icon: HomeIcon,                    matchPrefix: '/' },
   { href: '/audits',        label: 'Audits',             icon: ClipboardDocumentListIcon,   matchPrefix: '/audits' },
-  { href: '/plateformes',   label: 'Plateformes Moodle', icon: AcademicCapIcon,             matchPrefix: '/plateformes' },
+  { href: '/plateformes',   label: 'Plateformes Moodle', icon: AcademicCapIcon,             guard: 'hideFromEnseignant', matchPrefix: '/plateformes' },
   { href: '/configuration', label: 'Configurations LLM', icon: CpuChipIcon,                 guard: 'adminOnly', matchPrefix: '/configuration' },
   { href: '/users',         label: 'Utilisateurs',       icon: UsersIcon,                   guard: 'adminOnly', matchPrefix: '/users' },
   { href: '/me/courses',    label: 'Mes cours',          icon: BookOpenIcon,                matchPrefix: '/me' },
-  { href: '/audits/course', label: 'Analyser un cours',  icon: MagnifyingGlassIcon,         guard: 'canLaunch', matchPrefix: '/audits/course' },
-  { href: '/audits/new',    label: 'Lancer un audit',    icon: PlayIcon,                    guard: 'canLaunch', matchPrefix: '/audits/new' },
-  { href: '/rapports',      label: 'Rapports',           icon: DocumentChartBarIcon,        soon: true, matchPrefix: '/rapports' },
+  { href: '/audits/course', label: 'Analyser un cours',  icon: MagnifyingGlassIcon,         guard: 'hideFromEnseignant', matchPrefix: '/audits/course' },
+  { href: '/audits/new',    label: 'Lancer un audit',    icon: PlayIcon,                    guard: 'hideFromEnseignant', matchPrefix: '/audits/new' },
+  { href: '/rapports',      label: 'Rapports',           icon: DocumentChartBarIcon,        guard: 'hideFromEnseignant', soon: true, matchPrefix: '/rapports' },
 ]
 
 const ADMIN_NAV: NavItem[] = [
@@ -62,7 +73,12 @@ export function Sidebar({ role }: Props) {
   const canSee = (item: NavItem) => {
     if (!item.guard) return true
     if (item.guard === 'adminOnly') return role === 'admin'
-    if (item.guard === 'canLaunch') return role === 'admin' || role === 'auditeur'
+    if (item.guard === 'canLaunch') return role === 'admin' || role === 'enseignant'
+    // L'enseignant a une sidebar volontairement épurée : uniquement Tableau
+    // de bord + Audits + Mes cours. Tout le reste (Plateformes, Analyser un
+    // cours, Lancer un audit, Rapports) est masqué. Il peut auditer un cours
+    // via le bouton dédié sur /me/courses.
+    if (item.guard === 'hideFromEnseignant') return role !== 'enseignant'
     return true
   }
 

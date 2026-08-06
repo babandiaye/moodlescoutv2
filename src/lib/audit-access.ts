@@ -21,7 +21,7 @@ type AccessFailure = { ok: false; response: NextResponse }
  *
  * Un audit rattaché à une plateforme DÉSACTIVÉE est invisible à tout le monde
  * sauf l'admin (même règle que pour la page /audits/[id] et la liste /audits).
- * Sans ce check ici, un auditeur pouvait encore récupérer un export PDF/Excel
+ * Sans ce check ici, un enseignant pouvait encore récupérer un export PDF/Excel
  * en tapant l'URL directement — c'est le trou de sécu que P0 corrige.
  *
  * @param needsModify true pour cancel/DELETE — utilise canModifyAudit (plus strict, exclut le lecteur)

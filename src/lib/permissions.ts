@@ -1,11 +1,11 @@
 /**
  * Helpers centralisés pour les checks de permission. Permet d'éviter d'avoir
- * des `role === 'admin' || role === 'auditeur'` éparpillés dans le code, qui
+ * des `role === 'admin' || role === 'enseignant'` éparpillés dans le code, qui
  * deviendraient des bombes à retardement le jour où on ajoute un 4e rôle.
  *
  * Sémantique des 3 rôles :
  *   - admin    : tout (gestion users, plateformes, LLM configs, lancer, voir)
- *   - auditeur : lance des audits, voit/exporte/annule UNIQUEMENT les siens
+ *   - enseignant : audite ses propres cours, voit/exporte/annule UNIQUEMENT les siens
  *   - lecteur  : lecture seule GLOBALE — voit + exporte TOUS les audits,
  *                ne peut PAS lancer/annuler, pas d'accès aux pages admin
  */
@@ -15,9 +15,24 @@ export function isAdmin(role: UserRole | null | undefined): boolean {
   return role === 'admin'
 }
 
-/** Peut lancer un nouvel audit (consomme des slots LLM). */
+/**
+ * Peut lancer un nouvel audit (consomme des slots LLM).
+ * Note : l'enseignant peut lancer un audit UNIQUEMENT sur ses propres cours
+ * (via le bouton "Auditer ce cours" sur /me/courses). L'entrée générique
+ * "Lancer un audit" (plateforme entière) et "Analyser un cours" (cours
+ * arbitraire de la plateforme) lui sont interdites — voir canBrowsePlatform.
+ */
 export function canLaunchAudit(role: UserRole | null | undefined): boolean {
-  return role === 'admin' || role === 'auditeur'
+  return role === 'admin' || role === 'enseignant'
+}
+
+/**
+ * Peut naviguer les pages "plateforme entière" (Plateformes, Analyser un
+ * cours quelconque, Lancer un audit de plateforme). L'enseignant n'y a pas
+ * accès — il ne voit que sa boîte de Mes cours + ses audits.
+ */
+export function canBrowsePlatform(role: UserRole | null | undefined): boolean {
+  return role === 'admin' || role === 'lecteur'
 }
 
 /** Voit TOUS les audits sans filtre par userId (admin + lecteur). */
@@ -29,7 +44,7 @@ export function canViewAllAudits(role: UserRole | null | undefined): boolean {
  * Peut consulter/exporter UN audit donné.
  *   - admin : tout
  *   - lecteur : tout
- *   - auditeur : uniquement le sien
+ *   - enseignant : uniquement le sien
  */
 export function canViewAudit(
   role: UserRole | null | undefined,
@@ -44,7 +59,7 @@ export function canViewAudit(
  * Peut MODIFIER (annuler/supprimer) un audit donné.
  * Plus strict que canViewAudit : le lecteur ne peut PAS modifier.
  *   - admin : tout
- *   - auditeur : uniquement le sien
+ *   - enseignant : uniquement le sien
  *   - lecteur : aucun (lecture seule)
  */
 export function canModifyAudit(
@@ -53,7 +68,7 @@ export function canModifyAudit(
   auditUserId: string,
 ): boolean {
   if (role === 'admin') return true
-  if (role === 'auditeur') return currentUserId === auditUserId
+  if (role === 'enseignant') return currentUserId === auditUserId
   return false
 }
 
@@ -87,8 +102,8 @@ export function roleLabel(role: UserRole | null | undefined): string {
   switch (role) {
     case 'admin':
       return 'Administrateur'
-    case 'auditeur':
-      return 'Auditeur'
+    case 'enseignant':
+      return 'Enseignant'
     case 'lecteur':
       return 'Lecteur'
     default:

@@ -173,7 +173,7 @@ async function processAudit(job: Job<AuditJobData>): Promise<void> {
         // Le LLM peut tomber en FALLBACK silencieusement (parseAiResponse() ne
         // throw pas si réponse vide/malformée, callAi() ne throw pas non plus si
         // exception ⇒ description_courte = "Erreur IA: ...").
-        // Dans ce cas le score=0 sans flag d'erreur perd l'auditeur (il croit
+        // Dans ce cas le score=0 sans flag d'erreur perd l'enseignant (il croit
         // à un cours vide). On force errorMessage pour qu'il apparaisse dans la
         // section "Échecs" et le badge "partiel".
         const aiDesc = (result as { ai?: { description_courte?: string } }).ai?.description_courte

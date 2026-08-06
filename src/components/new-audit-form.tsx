@@ -458,7 +458,7 @@ export function NewAuditForm({
                   )} min).`
                 : `Le quota global de la plateforme est saturé (${quota.global.limit} audits / ${Math.round(
                     quota.global.windowSec / 60,
-                  )} min). D'autres auditeurs sont en cours.`}
+                  )} min). D'autres enseignants sont en cours.`}
             </span>
             <span style={{ fontFamily: 'var(--mono)', fontWeight: 600 }}>
               Disponible dans {formatMmSs(countdown)}
@@ -482,7 +482,7 @@ export function NewAuditForm({
               ? `Quota personnel : ${quota.perUser.used}/${quota.perUser.limit} audits utilisés sur la fenêtre de ${Math.round(
                   quota.perUser.windowSec / 60,
                 )} min.`
-              : `Quota global : ${quota.global.used}/${quota.global.limit} audits utilisés. La file est chargée par d'autres auditeurs.`}
+              : `Quota global : ${quota.global.used}/${quota.global.limit} audits utilisés. La file est chargée par d'autres enseignants.`}
           </div>
         )}
 
