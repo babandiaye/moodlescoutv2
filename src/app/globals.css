@@ -2852,3 +2852,70 @@ code { font-family: var(--mono); }
   .platform-row-status-block { align-items: flex-start; }
   .platform-row-actions { flex-wrap: wrap; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Card « Mon LLM par défaut » (top de /configuration)
+   ═══════════════════════════════════════════════════════════════ */
+
+.my-default-llm-card {
+  background: linear-gradient(135deg, var(--brand-soft) 0%, var(--surface) 100%);
+  border: 1px solid var(--brand-light);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.06);
+}
+.my-default-llm-card-body {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.my-default-llm-icon {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #FFFFFF;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+}
+.my-default-llm-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.my-default-llm-sub {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 2px;
+}
+.my-default-llm-select {
+  flex-shrink: 0;
+  min-width: 280px;
+  padding: 8px 12px;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.my-default-llm-select:disabled { opacity: 0.6; cursor: wait; }
+@media (max-width: 640px) {
+  .my-default-llm-select { min-width: 100%; }
+}
+
+/* Modal "Nouveau fournisseur IA" — largeur uniforme pour tous les champs.
+   Corrige un défaut visuel où Nom / Modèle apparaissaient plus étroits que
+   Clé API à cause de containers hétérogènes. Ici tous les .llm-modal-field
+   sont des .form-group qui étirent leur input à 100% du modal. */
+.llm-create-modal .llm-modal-field {
+  margin-bottom: 0;
+  width: 100%;
+}
+.llm-create-modal .llm-modal-field input,
+.llm-create-modal .llm-modal-field select {
+  width: 100%;
+  box-sizing: border-box;
+}

@@ -6,6 +6,7 @@ import { requireAuth, rateLimit } from '@/lib/api-helpers'
 import { getAuditQueue } from '@/lib/queue'
 import { logger } from '@/lib/logger'
 import { canLaunchAudit, isAdmin } from '@/lib/permissions'
+import { resolveEffectiveLlm } from '@/lib/llm-access'
 import { getMoodleUserIdByEmail, getUserEnrolledCourses } from '@/lib/moodle'
 import { resolveCourseInput } from '@/lib/audit-input-resolver'
 
@@ -15,7 +16,9 @@ export const dynamic = 'force-dynamic'
 const bodySchema = z.object({
   /** URL complète du cours, shortname, ou ID numérique. */
   input: z.string().min(1),
-  llmConfigId: z.string().uuid(),
+  // Optionnel : si absent, resolveEffectiveLlm() prend le défaut personnel
+  // du user, puis le défaut partagé (Ollama-UNCHK) en fallback.
+  llmConfigId: z.string().uuid().optional().nullable(),
   /**
    * Optionnel : plateforme cible pour désambiguïser si le shortname existe
    * sur plusieurs plateformes. Sinon on prend le 1er match.
@@ -77,17 +80,30 @@ async function postImpl(req: NextRequest) {
 
   const { input, llmConfigId, platformId, extractImages, quizDetail } = parsed.data
 
-  // Rate limits — mêmes que /api/audits (partage la protection infra).
-  const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
-    kind: 'user',
-    label: 'votre quota personnel',
-  })
-  if (userLimited) return userLimited
-  const globalLimited = await rateLimit('audit-start:global', 20, 300, {
-    kind: 'global',
-    label: 'le quota global de la plateforme',
-  })
-  if (globalLimited) return globalLimited
+  // Résolution LLM effectif (choix explicite / défaut perso / défaut partagé).
+  const llmRes = await resolveEffectiveLlm(
+    { role: a.user.role, userId: a.user.id },
+    llmConfigId ?? null,
+  )
+  if (!llmRes.ok) {
+    return NextResponse.json({ error: llmRes.error }, { status: llmRes.status })
+  }
+  const llm = llmRes.llm
+
+  // Quotas UNIQUEMENT si Ollama (infra partagée). Les configs perso Cloud
+  // (Anthropic/OpenAI/Mistral) tournent sans limite — chacun paie ses jetons.
+  if (llm.provider === 'ollama') {
+    const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
+      kind: 'user',
+      label: 'votre quota personnel Ollama-UNCHK',
+    })
+    if (userLimited) return userLimited
+    const globalLimited = await rateLimit('audit-start:global', 20, 300, {
+      kind: 'global',
+      label: 'le quota global Ollama-UNCHK',
+    })
+    if (globalLimited) return globalLimited
+  }
 
   // 1) Résolution input → matches. Même l'admin ne peut cibler qu'une
   //    plateforme active depuis cette vue ; il doit d'abord la réactiver
@@ -121,10 +137,7 @@ async function postImpl(req: NextRequest) {
     )
   }
 
-  // 3) Vérification LLM config existe + est activée
-  const llm = await prisma.llmConfig.findUnique({ where: { id: llmConfigId } })
-  if (!llm) return NextResponse.json({ error: 'Config LLM inconnue' }, { status: 404 })
-  if (!llm.isActive) return NextResponse.json({ error: 'Fournisseur IA désactivé.' }, { status: 403 })
+  // 3) LLM déjà résolu et validé (visibilité + isActive) via resolveEffectiveLlm
 
   // 4) Restriction rôle "enseignant" : ne peut auditer que ses propres cours
   //    (même règle que POST /api/audits — pas de bypass via cette nouvelle route).
@@ -182,7 +195,7 @@ async function postImpl(req: NextRequest) {
       status: 'pending',
       userId: a.user.id,
       platformId: match.platformId,
-      llmConfigId,
+      llmConfigId: llm.id,
       extractImages,
       quizDetail,
       categoriesJson: [],

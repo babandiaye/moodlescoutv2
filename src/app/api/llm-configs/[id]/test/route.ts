@@ -3,6 +3,7 @@ import axios from 'axios'
 import { prisma } from '@/lib/prisma'
 import { decrypt } from '@/lib/crypto'
 import { requireAuth } from '@/lib/api-helpers'
+import { canViewLlm } from '@/lib/llm-access'
 import { listOllamaModels } from '@/lib/llm'
 import { logger } from '@/lib/logger'
 
@@ -17,7 +18,11 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params
 
   const cfg = await prisma.llmConfig.findUnique({ where: { id } })
-  if (!cfg) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
+  // Guard visibilité — 404 même si l'admin cherche à tester la config perso
+  // d'un autre user (privacy).
+  if (!cfg || !canViewLlm({ role: a.user.role, userId: a.user.id }, cfg)) {
+    return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
+  }
 
   const apiKey = cfg.apiKeyEnc ? decrypt(cfg.apiKeyEnc) : undefined
   const start = Date.now()

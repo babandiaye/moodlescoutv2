@@ -23,6 +23,8 @@ import {
 } from '@heroicons/react/24/outline'
 
 type Provider = 'ollama' | 'anthropic'
+type Scope = 'shared' | 'personal'
+type Role = 'admin' | 'enseignant' | 'lecteur'
 
 export type LlmConfig = {
   id: string
@@ -30,6 +32,8 @@ export type LlmConfig = {
   provider: Provider | string
   apiUrl: string | null
   model: string
+  scope: Scope
+  userId: string | null
   isDefault: boolean
   isActive: boolean
   createdAt?: string
@@ -37,6 +41,10 @@ export type LlmConfig = {
 
 type Props = {
   initial: LlmConfig[]
+  currentUserId: string
+  currentUserRole: Role
+  /** ID du LLM par défaut de l'utilisateur courant, ou null. */
+  myDefaultLlmConfigId: string | null
 }
 
 type TestState =
@@ -59,7 +67,12 @@ const PAGE_SIZE = 10
  * Colonne droite : formulaire d'édition inline + actions (Tester, Explorer,
  * Désactiver/Activer, Supprimer).
  */
-export function LlmConfigsMasterDetail({ initial }: Props) {
+export function LlmConfigsMasterDetail({
+  initial,
+  currentUserId,
+  currentUserRole,
+  myDefaultLlmConfigId: initialMyDefault,
+}: Props) {
   const router = useRouter()
   const [configs, setConfigs] = useState<LlmConfig[]>(initial)
   const [selectedId, setSelectedId] = useState<string | null>(initial[0]?.id ?? null)
@@ -68,6 +81,10 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
   const [page, setPage] = useState(1)
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [myDefaultId, setMyDefaultId] = useState<string | null>(initialMyDefault)
+  const [savingDefault, setSavingDefault] = useState(false)
+
+  const isAdmin = currentUserRole === 'admin'
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -99,6 +116,37 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
     setTimeout(() => setBanner(null), 4500)
   }
 
+  /**
+   * Change le défaut personnel du user via PUT /api/me/default-llm.
+   * L'API valide côté serveur que la config est visible + active.
+   */
+  const changeMyDefault = async (llmConfigId: string | null) => {
+    setSavingDefault(true)
+    try {
+      const res = await fetch('/api/me/default-llm', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ llmConfigId }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`)
+      setMyDefaultId(llmConfigId)
+      const name = configs.find(c => c.id === llmConfigId)?.name
+      showBanner('ok', llmConfigId
+        ? `Défaut mis à jour : ${name ?? 'inconnu'}`
+        : 'Défaut réinitialisé sur Ollama-UNCHK partagé')
+      router.refresh()
+    } catch (e) {
+      showBanner('err', (e as Error).message)
+    } finally {
+      setSavingDefault(false)
+    }
+  }
+
+  // Options du dropdown défaut : uniquement les configs ACTIVES visibles.
+  // Les inactives ne peuvent pas être "défaut" (l'API refuserait).
+  const defaultOptions = configs.filter(c => c.isActive)
+
   return (
     <>
       {banner && (
@@ -107,6 +155,34 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
           {banner.msg}
         </div>
       )}
+
+      {/* Card "Mon LLM par défaut" — visible pour tous les rôles */}
+      <div className="my-default-llm-card">
+        <div className="my-default-llm-card-body">
+          <div className="my-default-llm-icon">
+            <StarIcon width={20} height={20} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="my-default-llm-label">Mon LLM par défaut</div>
+            <div className="my-default-llm-sub">
+              Utilisé automatiquement pour vos audits (sauf choix explicite au lancement).
+            </div>
+          </div>
+          <select
+            className="my-default-llm-select"
+            value={myDefaultId ?? ''}
+            onChange={e => changeMyDefault(e.target.value || null)}
+            disabled={savingDefault}
+          >
+            <option value="">— Fallback Ollama-UNCHK partagé —</option>
+            {defaultOptions.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.provider}/{c.model}){c.scope === 'shared' ? ' · partagé' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       <div className="master-detail">
         {/* ═══ Colonne gauche : liste ═══ */}
@@ -161,6 +237,7 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
                   key={c.id}
                   config={c}
                   selected={selectedId === c.id}
+                  isMyDefault={myDefaultId === c.id}
                   onClick={() => setSelectedId(c.id)}
                 />
               ))
@@ -211,6 +288,8 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
           {selected ? (
             <DetailPanel
               config={selected}
+              currentUserId={currentUserId}
+              currentUserRole={currentUserRole}
               onUpdated={upsertLocal}
               onDeleted={id => {
                 removeLocal(id)
@@ -231,6 +310,7 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
 
       {showCreate && (
         <CreateModal
+          isAdmin={isAdmin}
           onClose={() => setShowCreate(false)}
           onCreated={created => {
             setConfigs(list => [created, ...(created.isDefault ? list.map(x => ({ ...x, isDefault: false })) : list)])
@@ -247,7 +327,17 @@ export function LlmConfigsMasterDetail({ initial }: Props) {
 
 // ─── Sous-composants ─────────────────────────────────────────
 
-function ListItem({ config, selected, onClick }: { config: LlmConfig; selected: boolean; onClick: () => void }) {
+function ListItem({
+  config,
+  selected,
+  onClick,
+  isMyDefault,
+}: {
+  config: LlmConfig
+  selected: boolean
+  onClick: () => void
+  isMyDefault?: boolean
+}) {
   return (
     <div className={`list-item ${selected ? 'selected' : ''}`} onClick={onClick}>
       <input type="checkbox" className="list-item-check" onClick={e => e.stopPropagation()} readOnly checked={selected} />
@@ -257,9 +347,22 @@ function ListItem({ config, selected, onClick }: { config: LlmConfig; selected: 
           <span className="badge badge-neutral" style={{ textTransform: 'capitalize' }}>
             {config.provider}
           </span>
+          {/* Badge scope : "Partagé" (bleu clair) ou "Perso" (violet clair) */}
+          <span
+            className={`badge ${config.scope === 'shared' ? 'badge-info' : 'badge-neutral'}`}
+            style={{ fontSize: 10 }}
+            title={config.scope === 'shared' ? 'Config partagée (DITSI)' : 'Config personnelle (invisible aux autres)'}
+          >
+            {config.scope === 'shared' ? 'Partagé' : 'Perso'}
+          </span>
           {config.isDefault && (
             <span className="badge badge-info" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-              <StarIcon width={10} height={10} /> Défaut
+              <StarIcon width={10} height={10} /> Défaut d'usine
+            </span>
+          )}
+          {isMyDefault && !config.isDefault && (
+            <span className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              <StarIcon width={10} height={10} /> Mon défaut
             </span>
           )}
         </div>
@@ -277,17 +380,34 @@ function ListItem({ config, selected, onClick }: { config: LlmConfig; selected: 
 
 function DetailPanel({
   config,
+  currentUserId,
+  currentUserRole,
   onUpdated,
   onDeleted,
   onBanner,
   router,
 }: {
   config: LlmConfig
+  currentUserId: string
+  currentUserRole: Role
   onUpdated: (c: LlmConfig) => void
   onDeleted: (id: string) => void
   onBanner: (kind: 'ok' | 'err', msg: string) => void
   router: ReturnType<typeof useRouter>
 }) {
+  // ─── Règles d'action côté UI (miroir de lib/llm-access.ts côté serveur)
+  // Verrouille visuellement les actions sur les configs que l'user ne peut
+  // pas modifier — au lieu d'afficher un bouton qui renvoie 403 au clic.
+  const isConfigAdmin = currentUserRole === 'admin'
+  const isMine = config.scope === 'personal' && config.userId === currentUserId
+  const canEdit = config.scope === 'shared' ? isConfigAdmin : isMine
+  // Le défaut d'usine actif (Ollama-UNCHK) est verrouillé : ni désactivation
+  // ni suppression, même par admin — sinon on casserait le fallback qui sert
+  // à tous les users. L'admin doit d'abord marquer une AUTRE config partagée
+  // comme défaut avant de pouvoir la retirer.
+  const isProtectedFactoryDefault = config.scope === 'shared' && config.isDefault && config.isActive
+  const canToggleActive = canEdit && !isProtectedFactoryDefault
+  const canDelete = canEdit && !isProtectedFactoryDefault
   const [test, setTest] = useState<TestState>({ status: 'idle' })
   const [models, setModels] = useState<ModelsState>({ status: 'idle' })
   const [showModels, setShowModels] = useState(false)
@@ -393,17 +513,41 @@ function DetailPanel({
           <button type="button" className="btn btn-secondary" onClick={handleExplore} disabled={busy}>
             <Squares2X2Icon width={14} height={14} /> Explorer
           </button>
-          <button
-            type="button"
-            className={config.isActive ? 'btn btn-secondary' : 'btn btn-success'}
-            onClick={() => handlePatch({ isActive: !config.isActive })}
-            disabled={busy}
-          >
-            {config.isActive ? 'Désactiver' : 'Activer'}
-          </button>
-          <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={busy}>
-            <TrashIcon width={14} height={14} /> Supprimer
-          </button>
+          {canToggleActive && (
+            <button
+              type="button"
+              className={config.isActive ? 'btn btn-secondary' : 'btn btn-success'}
+              onClick={() => handlePatch({ isActive: !config.isActive })}
+              disabled={busy}
+            >
+              {config.isActive ? 'Désactiver' : 'Activer'}
+            </button>
+          )}
+          {canDelete && (
+            <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={busy}>
+              <TrashIcon width={14} height={14} /> Supprimer
+            </button>
+          )}
+          {isProtectedFactoryDefault && (
+            <span
+              className="badge badge-warn"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '6px 10px', fontSize: 12, fontWeight: 500,
+              }}
+              title="Configuration verrouillée : c'est le défaut d'usine actif utilisé par tous les utilisateurs. Pour la modifier, désignez d'abord une autre config partagée comme défaut."
+            >
+              🔒 Verrouillé (défaut d'usine)
+            </span>
+          )}
+          {!canEdit && !isProtectedFactoryDefault && (
+            <span
+              style={{ fontSize: 11, color: 'var(--text3)', alignSelf: 'center', marginLeft: 4 }}
+              title="Cette configuration est partagée par la DITSI — vous pouvez la tester mais pas la modifier."
+            >
+              🔒 Lecture seule
+            </span>
+          )}
         </div>
       </div>
 
@@ -464,10 +608,19 @@ function DetailPanel({
               <EditableModelField
                 configId={config.id}
                 value={config.model}
-                editing={editing === 'model'}
-                onEdit={() => setEditing('model')}
+                editing={editing === 'model' && canEdit}
+                onEdit={() => canEdit && setEditing('model')}
                 onSave={v => handlePatch({ model: v })}
                 onCancel={() => setEditing(null)}
+                // Politique DITSI : les configs Ollama partagées ne peuvent
+                // proposer que des modèles gemma3* (les autres modèles hébergés
+                // sur fromager sont pour d'autres usages ; forcer ici évite
+                // qu'on bascule accidentellement UNCHK sur mistral ou qwen).
+                modelFilter={
+                  config.scope === 'shared' && config.provider === 'ollama'
+                    ? (m: string) => /^gemma3/i.test(m)
+                    : undefined
+                }
               />
               <ReadOnlyField
                 label="Créée le"
@@ -691,6 +844,7 @@ function EditableModelField({
   onEdit,
   onSave,
   onCancel,
+  modelFilter,
 }: {
   configId: string
   value: string
@@ -698,6 +852,12 @@ function EditableModelField({
   onEdit: () => void
   onSave: (v: string) => void
   onCancel: () => void
+  /**
+   * Filtre optionnel appliqué à la liste des modèles retournée par l'API.
+   * Ex : `(m) => /^gemma3/i.test(m)` pour restreindre un Ollama partagé à
+   * la famille gemma3 (politique DITSI).
+   */
+  modelFilter?: (model: string) => boolean
 }) {
   const [draft, setDraft] = useState(value)
   const [state, setState] = useState<
@@ -717,7 +877,9 @@ function EditableModelField({
         setState({ status: 'error', error: d.error ?? `HTTP ${res.status}` })
         return
       }
-      setState({ status: 'ready', list: Array.isArray(d.models) ? d.models : [] })
+      const raw: string[] = Array.isArray(d.models) ? d.models : []
+      const filtered = modelFilter ? raw.filter(modelFilter) : raw
+      setState({ status: 'ready', list: filtered })
     } catch (e) {
       setState({ status: 'error', error: (e as Error).message })
     }
@@ -904,32 +1066,116 @@ function NewApiKeyForm({ onSave, onCancel }: { onSave: (v: string) => void; onCa
 
 // ─── Modal création ──────────────────────────────────────────
 
+/**
+ * Filtre imposé selon la portée : pour les configs shared+Ollama (typiquement
+ * l'infra UN-CHK partagée), on autorise uniquement les modèles gemma3* —
+ * politique DITSI. Toutes les autres combinaisons montrent la liste complète.
+ */
+function filterModelsForPolicy(
+  provider: Provider,
+  scope: Scope,
+  models: string[],
+): string[] {
+  if (provider === 'ollama' && scope === 'shared') {
+    return models.filter(m => /^gemma3/i.test(m))
+  }
+  return models
+}
+
 function CreateModal({
+  isAdmin,
   onClose,
   onCreated,
 }: {
+  isAdmin: boolean
   onClose: () => void
   onCreated: (c: LlmConfig) => void
 }) {
+  // Scope par défaut : personal (le comportement standard pour un enseignant).
   const [form, setForm] = useState({
     name: '',
-    provider: 'ollama' as Provider,
+    provider: 'anthropic' as Provider,
     apiUrl: '',
     apiKey: '',
-    model: 'gemma3:12b',
+    model: '',
+    scope: 'personal' as Scope,
     isDefault: false,
   })
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // État du test : "idle" avant test, "testing" pendant, "ready" après (modèles chargés).
+  // Toute modif de provider/URL/clé/scope réinitialise le test — impossible de créer
+  // sans avoir passé un test valide (garantit le modèle correct).
+  const [testState, setTestState] = useState<
+    | { status: 'idle' }
+    | { status: 'testing' }
+    | { status: 'ready'; models: string[]; testedAt: number }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' })
+
+  const resetTest = () => setTestState({ status: 'idle' })
+
+  const isTestable =
+    (form.provider === 'ollama' && !!form.apiUrl) ||
+    (form.provider === 'anthropic' && !!form.apiKey)
+
+  const runTest = async () => {
+    setTestState({ status: 'testing' })
+    try {
+      const res = await fetch('/api/llm-configs/probe-models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: form.provider,
+          apiUrl: form.apiUrl || null,
+          apiKey: form.apiKey || null,
+        }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) {
+        setTestState({ status: 'error', message: d.error ?? `HTTP ${res.status}` })
+        return
+      }
+      const models: string[] = Array.isArray(d.models) ? d.models : []
+      const filtered = filterModelsForPolicy(form.provider, form.scope, models)
+      if (filtered.length === 0) {
+        setTestState({
+          status: 'error',
+          message:
+            form.provider === 'ollama' && form.scope === 'shared'
+              ? 'Aucun modèle gemma3* trouvé sur cet Ollama. Une config partagée UN-CHK doit exposer un modèle gemma3 (politique DITSI).'
+              : 'Le test a réussi mais aucun modèle n\'a été retourné par le fournisseur.',
+        })
+        return
+      }
+      setTestState({ status: 'ready', models: filtered, testedAt: Date.now() })
+      // Pré-sélectionne le 1er modèle si le champ est vide ou plus dans la liste
+      setForm(f => ({
+        ...f,
+        model: filtered.includes(f.model) ? f.model : filtered[0],
+      }))
+    } catch (e) {
+      setTestState({ status: 'error', message: (e as Error).message })
+    }
+  }
+
   const submit = async () => {
+    if (testState.status !== 'ready') return
     setSubmitting(true)
     setError(null)
     try {
+      // Normalise les champs optionnels : "" → null pour éviter que Zod .url()
+      // rejette une chaîne vide côté serveur (cas Anthropic sans apiUrl).
+      const payload = {
+        ...form,
+        apiUrl: form.apiUrl || null,
+        apiKey: form.apiKey || null,
+      }
       const res = await fetch('/api/llm-configs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       })
       const d = await res.json()
       if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`)
@@ -951,72 +1197,159 @@ function CreateModal({
     >
       <div
         onClick={e => e.stopPropagation()}
+        className="llm-create-modal"
         style={{
           background: 'var(--surface)', borderRadius: 14,
-          padding: 24, maxWidth: 480, width: '100%',
+          padding: 24, maxWidth: 520, width: '100%',
           boxShadow: 'var(--shadow-lg)',
+          maxHeight: '90vh', overflowY: 'auto',
         }}
       >
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: 0, marginBottom: 6 }}>
-          Nouvelle configuration LLM
+          Nouveau fournisseur IA
         </h2>
         <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 16 }}>
-          Ajoutez un fournisseur IA (Ollama souverain ou Anthropic Claude).
+          {isAdmin
+            ? 'Ajoutez une config partagée (visible par tous) ou perso (visible par vous seul).'
+            : 'Ajoutez votre propre fournisseur IA. Il ne sera visible que par vous.'}
         </p>
 
         {error && <div className="error-banner">{error}</div>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Portée — visible pour admin uniquement */}
+          {isAdmin && (
+            <div>
+              <div className="form-label">Portée</div>
+              <div className="provider-grid">
+                <div
+                  className={`provider-card ${form.scope === 'shared' ? 'active' : ''}`}
+                  onClick={() => { setForm(f => ({ ...f, scope: 'shared' })); resetTest() }}
+                >
+                  <div className="provider-card-title">Partagée</div>
+                  <div className="provider-card-sub">Visible par tous</div>
+                </div>
+                <div
+                  className={`provider-card ${form.scope === 'personal' ? 'active' : ''}`}
+                  onClick={() => { setForm(f => ({ ...f, scope: 'personal', isDefault: false })); resetTest() }}
+                >
+                  <div className="provider-card-title">Personnelle</div>
+                  <div className="provider-card-sub">Vous seul</div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div>
             <div className="form-label">Fournisseur</div>
             <div className="provider-grid">
               <div
                 className={`provider-card ${form.provider === 'ollama' ? 'active' : ''}`}
-                onClick={() => setForm(f => ({ ...f, provider: 'ollama' }))}
+                onClick={() => { setForm(f => ({ ...f, provider: 'ollama', model: '' })); resetTest() }}
               >
                 <div className="provider-card-title">Ollama</div>
-                <div className="provider-card-sub">Souverain (UN-CHK)</div>
+                <div className="provider-card-sub">Auto-hébergé</div>
               </div>
               <div
                 className={`provider-card ${form.provider === 'anthropic' ? 'active' : ''}`}
-                onClick={() => setForm(f => ({ ...f, provider: 'anthropic' }))}
+                onClick={() => { setForm(f => ({ ...f, provider: 'anthropic', model: '' })); resetTest() }}
               >
                 <div className="provider-card-title">Anthropic</div>
                 <div className="provider-card-sub">Claude API</div>
               </div>
             </div>
           </div>
-          <div>
+
+          <div className="form-group llm-modal-field">
             <div className="form-label">Nom</div>
-            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Ollama Fromager…" />
+            <input
+              value={form.name}
+              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              placeholder={form.provider === 'ollama' ? 'Ollama Fromager, Ollama Perso…' : 'Ma clé Anthropic, Claude Perso…'}
+            />
           </div>
+
           {form.provider === 'ollama' && (
-            <div>
+            <div className="form-group llm-modal-field">
               <div className="form-label">URL Ollama</div>
-              <input value={form.apiUrl} onChange={e => setForm(f => ({ ...f, apiUrl: e.target.value }))} placeholder="https://fromager.unchk.sn" />
+              <input
+                value={form.apiUrl}
+                onChange={e => { setForm(f => ({ ...f, apiUrl: e.target.value })); resetTest() }}
+                placeholder="https://fromager.unchk.sn"
+              />
             </div>
           )}
-          <div>
-            <div className="form-label">Clé API {form.provider === 'ollama' && '(optionnel)'}</div>
+
+          <div className="form-group llm-modal-field">
+            <div className="form-label">
+              Clé API {form.provider === 'ollama' && <span style={{ fontWeight: 400, color: 'var(--text3)' }}>(optionnel)</span>}
+            </div>
             <input
               type="password"
               value={form.apiKey}
-              onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
+              onChange={e => { setForm(f => ({ ...f, apiKey: e.target.value })); resetTest() }}
               placeholder={form.provider === 'anthropic' ? 'sk-ant-…' : 'Bearer token…'}
             />
           </div>
+
+          {/* Bouton Tester + résultat */}
           <div>
-            <div className="form-label">Modèle</div>
-            <input value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={runTest}
+              disabled={!isTestable || testState.status === 'testing'}
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              <PlayIcon width={14} height={14} />
+              {testState.status === 'testing'
+                ? 'Test en cours…'
+                : testState.status === 'ready'
+                  ? `✓ Connexion OK — ${testState.models.length} modèle${testState.models.length > 1 ? 's' : ''} disponible${testState.models.length > 1 ? 's' : ''}`
+                  : 'Tester la connexion'}
+            </button>
+            {testState.status === 'error' && (
+              <div className="error-banner" style={{ marginTop: 8, fontSize: 12 }}>
+                {testState.message}
+              </div>
+            )}
+            {form.provider === 'ollama' && form.scope === 'shared' && testState.status !== 'error' && (
+              <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6, marginBottom: 0 }}>
+                <strong>Politique DITSI</strong> : seuls les modèles <code>gemma3*</code> sont autorisés pour un Ollama partagé.
+              </p>
+            )}
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={form.isDefault}
-              onChange={e => setForm(f => ({ ...f, isDefault: e.target.checked }))}
-            />
-            Définir comme configuration par défaut
-          </label>
+
+          {/* Dropdown modèles — affiché UNIQUEMENT après un test réussi */}
+          {testState.status === 'ready' && (
+            <div className="form-group llm-modal-field">
+              <div className="form-label">Modèle</div>
+              <select
+                value={form.model}
+                onChange={e => setForm(f => ({ ...f, model: e.target.value }))}
+                style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}
+              >
+                {testState.models.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* isDefault (défaut d'usine pour TOUS les users) : admin + scope=shared uniquement */}
+          {isAdmin && form.scope === 'shared' && testState.status === 'ready' && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={form.isDefault}
+                onChange={e => setForm(f => ({ ...f, isDefault: e.target.checked }))}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                Définir comme <strong>défaut d'usine</strong> (LLM automatique de tous les nouveaux comptes)
+              </span>
+            </label>
+          )}
         </div>
 
         <div style={{ marginTop: 20, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
@@ -1025,7 +1358,13 @@ function CreateModal({
             type="button"
             className="btn btn-primary"
             onClick={submit}
-            disabled={submitting || !form.name || (form.provider === 'ollama' && !form.apiUrl) || (form.provider === 'anthropic' && !form.apiKey)}
+            disabled={
+              submitting ||
+              !form.name ||
+              testState.status !== 'ready' ||
+              !form.model
+            }
+            title={testState.status !== 'ready' ? 'Testez d\'abord la connexion' : undefined}
           >
             {submitting ? 'Création…' : 'Créer'}
           </button>

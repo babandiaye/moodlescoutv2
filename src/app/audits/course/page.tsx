@@ -5,6 +5,7 @@ import { auth } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { SingleCourseAuditForm } from '@/components/single-course-audit-form'
 import { canLaunchAudit, isAdmin } from '@/lib/permissions'
+import { visibleLlmsFilter } from '@/lib/llm-access'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,11 +18,20 @@ export default async function SingleCourseAuditPage() {
   // SES propres cours, donc via /me/courses uniquement.
   if (session.user.role === 'enseignant') redirect('/me/courses')
 
-  const llmConfigs = await prisma.llmConfig.findMany({
-    where: { isActive: true },
-    orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-    select: { id: true, name: true, provider: true, model: true, isDefault: true },
-  })
+  const [llmConfigs, meRow] = await Promise.all([
+    prisma.llmConfig.findMany({
+      where: {
+        isActive: true,
+        ...visibleLlmsFilter({ role: session.user.role, userId: session.user.id }),
+      },
+      orderBy: [{ scope: 'asc' }, { isDefault: 'desc' }, { name: 'asc' }],
+      select: { id: true, name: true, provider: true, model: true, isDefault: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { defaultLlmConfigId: true },
+    }),
+  ])
 
   if (llmConfigs.length === 0) {
     return (
@@ -47,5 +57,5 @@ export default async function SingleCourseAuditPage() {
     )
   }
 
-  return <SingleCourseAuditForm llmConfigs={llmConfigs} />
+  return <SingleCourseAuditForm llmConfigs={llmConfigs} myDefaultLlmConfigId={meRow?.defaultLlmConfigId ?? null} />
 }

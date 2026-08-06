@@ -4,6 +4,7 @@ import { requireAuth, rateLimit } from '@/lib/api-helpers'
 import { checkAuditAccess } from '@/lib/audit-access'
 import { getAuditQueue } from '@/lib/queue'
 import { canLaunchAudit, isAdmin } from '@/lib/permissions'
+import { canViewLlm, resolveEffectiveLlm } from '@/lib/llm-access'
 import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
@@ -55,19 +56,7 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
     )
   }
 
-  // 3) Rate limits (identiques à POST /api/audits)
-  const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
-    kind: 'user',
-    label: 'votre quota personnel',
-  })
-  if (userLimited) return userLimited
-  const globalLimited = await rateLimit('audit-start:global', 20, 300, {
-    kind: 'global',
-    label: 'le quota global de la plateforme',
-  })
-  if (globalLimited) return globalLimited
-
-  // 4) Récupère les paramètres complets de l'audit source
+  // 3) Récupère les paramètres complets de l'audit source
   const src = await prisma.auditSession.findUnique({
     where: { id },
     select: {
@@ -79,7 +68,7 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
       courseIdsJson: true,
       sessionKey: true,
       platform: { select: { isActive: true, name: true } },
-      llmConfig: { select: { isActive: true } },
+      llmConfig: { select: { id: true, scope: true, userId: true, isActive: true, provider: true } },
     },
   })
   if (!src) return NextResponse.json({ error: 'Audit source introuvable' }, { status: 404 })
@@ -87,11 +76,35 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
   if (!src.platform.isActive && !isAdmin(a.user.role)) {
     return NextResponse.json({ error: 'Plateforme désactivée par l\'administrateur.' }, { status: 403 })
   }
-  if (!src.llmConfig.isActive) {
-    return NextResponse.json(
-      { error: 'Le fournisseur IA utilisé par cet audit est désactivé. Éditez la config LLM ou lancez un audit neuf avec un autre fournisseur.' },
-      { status: 403 },
-    )
+
+  // 4) Résolution du LLM pour le RELANCEUR :
+  //   - Si le LLM source est encore visible + actif pour lui → on garde
+  //   - Sinon (config perso d'un autre user, ou désactivée) → fallback sur
+  //     son défaut personnel → puis Ollama-UNCHK partagé
+  const canReuse =
+    src.llmConfig.isActive &&
+    canViewLlm({ role: a.user.role, userId: a.user.id }, src.llmConfig)
+  const llmRes = await resolveEffectiveLlm(
+    { role: a.user.role, userId: a.user.id },
+    canReuse ? src.llmConfigId : null,
+  )
+  if (!llmRes.ok) {
+    return NextResponse.json({ error: llmRes.error }, { status: llmRes.status })
+  }
+  const llm = llmRes.llm
+
+  // 5) Quotas UNIQUEMENT si le LLM effectif est Ollama (infra partagée)
+  if (llm.provider === 'ollama') {
+    const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
+      kind: 'user',
+      label: 'votre quota personnel Ollama-UNCHK',
+    })
+    if (userLimited) return userLimited
+    const globalLimited = await rateLimit('audit-start:global', 20, 300, {
+      kind: 'global',
+      label: 'le quota global Ollama-UNCHK',
+    })
+    if (globalLimited) return globalLimited
   }
 
   // 5) Crée la nouvelle session — préfixe "relaunch-" pour repérer visuellement
@@ -102,7 +115,7 @@ export async function POST(_req: NextRequest, ctx: Ctx) {
       status: 'pending',
       userId: a.user.id,
       platformId: src.platformId,
-      llmConfigId: src.llmConfigId,
+      llmConfigId: llm.id,
       extractImages: src.extractImages,
       quizDetail: src.quizDetail,
       categoriesJson: src.categoriesJson ?? [],

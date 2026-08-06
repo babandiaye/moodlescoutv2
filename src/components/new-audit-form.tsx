@@ -29,7 +29,14 @@ type PreflightState = {
 }
 
 type Platform = { id: string; name: string; url: string; version: string }
-type LlmConfig = { id: string; name: string; provider: string; model: string; isDefault: boolean }
+type LlmConfig = {
+  id: string
+  name: string
+  provider: string
+  model: string
+  isDefault: boolean
+  scope?: 'shared' | 'personal'
+}
 
 type QuotaInfo = {
   perUser: { used: number; limit: number; remaining: number; retryAfterSec: number; windowSec: number }
@@ -44,6 +51,8 @@ type QuotaInfo = {
 type Props = {
   platforms: Platform[]
   llmConfigs: LlmConfig[]
+  /** ID du LLM par défaut personnel de l'utilisateur, ou null. */
+  myDefaultLlmConfigId?: string | null
   /** Plateforme pré-sélectionnée (venant de /me/courses via ?platform=). */
   preselectedPlatformId?: string | null
   /** Sous-ensemble de courseIds Moodle à auditer (venant de /me/courses). */
@@ -62,12 +71,20 @@ function formatMmSs(sec: number): string {
 export function NewAuditForm({
   platforms,
   llmConfigs,
+  myDefaultLlmConfigId,
   preselectedPlatformId,
   preselectedCourseIds,
   preselectedCategories,
 }: Props) {
   const router = useRouter()
-  const defaultLlm = llmConfigs.find(c => c.isDefault) ?? llmConfigs[0]
+  // Ordre de préférence pour pré-sélectionner :
+  //   1) le défaut personnel de l'utilisateur (colonne User.defaultLlmConfigId)
+  //   2) le défaut d'usine partagé (LlmConfig.isDefault = true)
+  //   3) le premier de la liste
+  const defaultLlm =
+    (myDefaultLlmConfigId ? llmConfigs.find(c => c.id === myDefaultLlmConfigId) : undefined) ??
+    llmConfigs.find(c => c.isDefault) ??
+    llmConfigs[0]
   // Si /me/courses a pré-sélectionné une plateforme valide, on l'utilise.
   const initialPlatform =
     preselectedPlatformId && platforms.some(p => p.id === preselectedPlatformId)

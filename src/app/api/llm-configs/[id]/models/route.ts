@@ -3,6 +3,7 @@ import axios from 'axios'
 import { prisma } from '@/lib/prisma'
 import { decrypt } from '@/lib/crypto'
 import { requireAuth } from '@/lib/api-helpers'
+import { canViewLlm } from '@/lib/llm-access'
 import { listOllamaModels } from '@/lib/llm'
 import { logger } from '@/lib/logger'
 
@@ -17,7 +18,9 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params
 
   const cfg = await prisma.llmConfig.findUnique({ where: { id } })
-  if (!cfg) return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
+  if (!cfg || !canViewLlm({ role: a.user.role, userId: a.user.id }, cfg)) {
+    return NextResponse.json({ error: 'Introuvable' }, { status: 404 })
+  }
 
   const apiKey = cfg.apiKeyEnc ? decrypt(cfg.apiKeyEnc) : undefined
 

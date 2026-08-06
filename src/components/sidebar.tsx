@@ -54,7 +54,7 @@ const NAV: NavItem[] = [
   { href: '/',              label: 'Tableau de bord',    icon: HomeIcon,                    matchPrefix: '/' },
   { href: '/audits',        label: 'Audits',             icon: ClipboardDocumentListIcon,   matchPrefix: '/audits' },
   { href: '/plateformes',   label: 'Plateformes Moodle', icon: AcademicCapIcon,             guard: 'hideFromEnseignant', matchPrefix: '/plateformes' },
-  { href: '/configuration', label: 'Configurations LLM', icon: CpuChipIcon,                 guard: 'adminOnly', matchPrefix: '/configuration' },
+  { href: '/configuration', label: 'Mes Fournisseurs IA', icon: CpuChipIcon,                 matchPrefix: '/configuration' },
   { href: '/users',         label: 'Utilisateurs',       icon: UsersIcon,                   guard: 'adminOnly', matchPrefix: '/users' },
   { href: '/me/courses',    label: 'Mes cours',          icon: BookOpenIcon,                matchPrefix: '/me' },
   { href: '/audits/course', label: 'Analyser un cours',  icon: MagnifyingGlassIcon,         guard: 'hideFromEnseignant', matchPrefix: '/audits/course' },

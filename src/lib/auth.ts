@@ -60,6 +60,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       const direction = (profile as { direction?: string }).direction ?? null
       const isAdmin = direction === ADMIN_DIRECTION
 
+      // À la CRÉATION uniquement : on résout le défaut d'usine (config
+      // partagée `isDefault=true`, typiquement Ollama-UNCHK) pour l'attribuer
+      // comme LLM par défaut du nouvel utilisateur. Il pourra le changer via
+      // PUT /api/me/default-llm. Null si aucune config partagée n'existe
+      // encore (setup initial de la plateforme) — l'audit basculera alors
+      // sur resolveEffectiveLlm() qui gèrera l'absence.
+      const factoryDefault = await prisma.llmConfig.findFirst({
+        where: { scope: 'shared', isDefault: true, isActive: true },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      })
+
       // Upsert : on ne touche au rôle qu'à la CRÉATION (premier login),
       // pour ne pas écraser des changements manuels d'admin sur les logins suivants.
       await prisma.user.upsert({
@@ -82,6 +94,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           fullName:          profile.name ?? null,
           direction,
           role:              isAdmin ? 'admin' : 'enseignant',
+          defaultLlmConfigId: factoryDefault?.id ?? null,
           lastLogin:         new Date(),
         },
       })

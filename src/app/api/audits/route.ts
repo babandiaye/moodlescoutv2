@@ -11,6 +11,7 @@ import {
   canViewAllAudits,
   isAdmin,
 } from '@/lib/permissions'
+import { resolveEffectiveLlm } from '@/lib/llm-access'
 import { getMoodleUserIdByEmail, getUserEnrolledCourses } from '@/lib/moodle'
 
 export const runtime = 'nodejs'
@@ -18,7 +19,9 @@ export const dynamic = 'force-dynamic'
 
 const createSchema = z.object({
   platformId: z.string().uuid(),
-  llmConfigId: z.string().uuid(),
+  // llmConfigId optionnel : si absent, resolveEffectiveLlm() prend le
+  // défaut personnel du user, puis le défaut partagé (Ollama-UNCHK) en fallback.
+  llmConfigId: z.string().uuid().optional().nullable(),
   extractImages: z.boolean().default(true),
   quizDetail: z.enum(['meta', 'detail', 'both']).default('both'),
   categories: z.array(z.string()).default([]),
@@ -78,21 +81,6 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Rate limit per-user : protège contre l'abus individuel
-  const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
-    kind: 'user',
-    label: 'votre quota personnel',
-  })
-  if (userLimited) return userLimited
-
-  // Rate limit global : protège l'infra (Moodle, Ollama, BullMQ) contre la
-  // saturation simultanée par plusieurs utilisateurs légitimes.
-  const globalLimited = await rateLimit('audit-start:global', 20, 300, {
-    kind: 'global',
-    label: 'le quota global de la plateforme',
-  })
-  if (globalLimited) return globalLimited
-
   const body = await req.json().catch(() => null)
   const parsed = createSchema.safeParse(body)
   if (!parsed.success) {
@@ -104,23 +92,43 @@ export async function POST(req: NextRequest) {
 
   const { platformId, llmConfigId, extractImages, quizDetail, categories, courseIds } = parsed.data
 
-  const [platform, llm] = await Promise.all([
-    prisma.moodlePlatform.findUnique({ where: { id: platformId } }),
-    prisma.llmConfig.findUnique({ where: { id: llmConfigId } }),
-  ])
+  // Résolution du LLM effectif :
+  //  1) llmConfigId explicite (validé visibilité + isActive)
+  //  2) sinon user.defaultLlmConfigId
+  //  3) sinon config partagée isDefault=true (Ollama-UNCHK)
+  const llmRes = await resolveEffectiveLlm(
+    { role: a.user.role, userId: a.user.id },
+    llmConfigId ?? null,
+  )
+  if (!llmRes.ok) {
+    return NextResponse.json({ error: llmRes.error }, { status: llmRes.status })
+  }
+  const llm = llmRes.llm
+
+  // Quotas UNIQUEMENT pour Ollama (infra partagée à 1 slot GPU). Les autres
+  // providers (Anthropic/OpenAI/Mistral) tapent des APIs cloud avec la clé
+  // perso du user → il paie ses propres jetons, on ne limite pas.
+  if (llm.provider === 'ollama') {
+    const userLimited = await rateLimit(`audit-start:${a.user.id}`, 5, 300, {
+      kind: 'user',
+      label: 'votre quota personnel Ollama-UNCHK',
+    })
+    if (userLimited) return userLimited
+
+    const globalLimited = await rateLimit('audit-start:global', 20, 300, {
+      kind: 'global',
+      label: 'le quota global Ollama-UNCHK',
+    })
+    if (globalLimited) return globalLimited
+  }
+
+  const platform = await prisma.moodlePlatform.findUnique({ where: { id: platformId } })
   if (!platform) return NextResponse.json({ error: 'Plateforme inconnue' }, { status: 404 })
-  if (!llm) return NextResponse.json({ error: 'Config LLM inconnue' }, { status: 404 })
   // Un non-admin ne peut pas cibler une plateforme désactivée (elle est censée
   // ne pas lui être visible dans l'UI, mais on ferme aussi la porte côté API
   // pour empêcher tout POST direct).
   if (!isAdmin(a.user.role) && !platform.isActive) {
     return NextResponse.json({ error: 'Plateforme désactivée par l\'administrateur.' }, { status: 403 })
-  }
-  // Même règle pour le LLM : un fournisseur IA désactivé n'est plus disponible,
-  // quel que soit le rôle (contrairement aux plateformes, où l'admin garde la
-  // main — un LLM inactif est vraiment inactif partout).
-  if (!llm.isActive) {
-    return NextResponse.json({ error: 'Fournisseur IA désactivé.' }, { status: 403 })
   }
 
   // Restriction rôle "enseignant" : ne peut lancer un audit QUE sur ses propres
@@ -189,7 +197,9 @@ export async function POST(req: NextRequest) {
       status: 'pending',
       userId: a.user.id,
       platformId,
-      llmConfigId,
+      // Utilise l'ID résolu (peut différer de la requête si le user avait un
+      // défaut personnel ou si le fallback partagé a été utilisé).
+      llmConfigId: llm.id,
       extractImages,
       quizDetail,
       categoriesJson: categories,

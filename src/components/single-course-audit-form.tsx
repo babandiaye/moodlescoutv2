@@ -14,7 +14,7 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
 
-type LlmConfig = { id: string; name: string; provider: string; model: string; isDefault: boolean }
+type LlmConfig = { id: string; name: string; provider: string; model: string; isDefault: boolean; scope?: 'shared' | 'personal' }
 
 type Match = {
   platformId: string
@@ -31,11 +31,14 @@ type ResolveState =
   | { status: 'found'; matches: Match[]; kind: 'url' | 'shortname' | 'id' }
   | { status: 'error'; error: string }
 
-type Props = { llmConfigs: LlmConfig[] }
+type Props = { llmConfigs: LlmConfig[]; myDefaultLlmConfigId?: string | null }
 
-export function SingleCourseAuditForm({ llmConfigs }: Props) {
+export function SingleCourseAuditForm({ llmConfigs, myDefaultLlmConfigId }: Props) {
   const router = useRouter()
-  const defaultLlm = llmConfigs.find(c => c.isDefault) ?? llmConfigs[0]
+  const defaultLlm =
+    (myDefaultLlmConfigId ? llmConfigs.find(c => c.id === myDefaultLlmConfigId) : undefined) ??
+    llmConfigs.find(c => c.isDefault) ??
+    llmConfigs[0]
   const [input, setInput] = useState('')
   const [llmConfigId, setLlmConfigId] = useState(defaultLlm?.id ?? '')
   const [extractImages, setExtractImages] = useState(true)

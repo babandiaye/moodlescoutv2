@@ -30,6 +30,17 @@ enum LlmProvider {
   anthropic
 }
 
+// Portée d'une config LLM :
+//   - shared   : catalogue partagé (visible par tous), géré par l'admin.
+//                Ex : "Ollama-UNCHK" — le défaut d'usine pour tout le monde.
+//   - personal : config privée d'un utilisateur (ex : sa clé Anthropic perso).
+//                Visible et modifiable UNIQUEMENT par son propriétaire.
+//                Pas facturée à la DITSI, l'user paie ses propres jetons.
+enum LlmScope {
+  shared
+  personal
+}
+
 enum QuizDetail {
   meta
   detail
@@ -54,10 +65,25 @@ model User {
   role              UserRole  @default(enseignant)
   isActive          Boolean   @default(true) @map("is_active")
   lastLogin         DateTime? @map("last_login")
+
+  // ─── LLM par défaut de cet utilisateur ─────────────────────
+  // Pointe soit vers une config partagée (Ollama-UNCHK typiquement),
+  // soit vers une config perso de l'utilisateur. Initialisé automatiquement
+  // sur la config shared+isDefault=true à la création du compte
+  // (voir lib/auth.ts). Utilisé en pré-sélection du formulaire d'audit
+  // et en fallback si l'audit est POST sans llmConfigId explicite.
+  //
+  // onDelete: SetNull → si l'user supprime sa config perso qui était son
+  // défaut, on ne casse pas le compte : le POST /api/audits basculera
+  // silencieusement sur le shared+isDefault=true (Ollama-UNCHK).
+  defaultLlmConfigId String?     @map("default_llm_config_id")
+  defaultLlm         LlmConfig?  @relation("UserDefaultLlm", fields: [defaultLlmConfigId], references: [id], onDelete: SetNull)
+
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  auditSessions AuditSession[]
+  auditSessions   AuditSession[]
+  personalLlms    LlmConfig[]    @relation("UserPersonalLlms")
 
   @@index([kcSub])
   @@index([direction])
@@ -113,14 +139,28 @@ model LlmConfig {
   // Clé API chiffrée AES-256-GCM. Bearer pour Ollama, x-api-key pour Anthropic.
   apiKeyEnc   String?     @map("api_key_enc")
   model       String      @default("gemma3:12b")
+
+  // ─── Isolation par utilisateur ─────────────────────────────
+  // scope=shared   : catalogue partagé (userId doit être NULL). Géré par admin.
+  //                  isDefault=true sur UNE config shared = défaut d'usine
+  //                  pour tous les nouveaux users (typiquement Ollama-UNCHK).
+  // scope=personal : privée à un user (userId requis). Invisible pour tous
+  //                  les autres, y compris l'admin. L'user paie ses jetons.
+  scope       LlmScope    @default(shared)
+  userId      String?     @map("user_id")
+  user        User?       @relation("UserPersonalLlms", fields: [userId], references: [id], onDelete: Cascade)
+
   isDefault   Boolean     @default(false) @map("is_default")
   isActive    Boolean     @default(true) @map("is_active")
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
-  auditSessions AuditSession[]
+  auditSessions   AuditSession[]
+  userDefaultOf   User[]         @relation("UserDefaultLlm")
 
   @@index([isDefault])
+  @@index([userId])
+  @@index([scope])
   @@map("llm_configs")
 }
 

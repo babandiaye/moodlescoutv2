@@ -4,7 +4,12 @@ import { peekRateLimit, requireAuth } from '@/lib/api-helpers'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Mêmes seuils que dans POST /api/audits (à garder synchros)
+// Mêmes seuils que dans POST /api/audits (à garder synchros).
+// IMPORTANT : ces quotas ne s'appliquent que pour les audits utilisant
+// Ollama-UNCHK (infra partagée, 1 slot GPU). Un audit lancé avec une config
+// perso Cloud (Anthropic/OpenAI/Mistral) ne consomme aucun quota — chacun
+// paie ses jetons. L'UI (new-audit-form.tsx) doit conditionner l'affichage
+// du bandeau quota selon le provider du LLM sélectionné.
 const PER_USER_MAX = 5
 const PER_USER_WINDOW = 300
 const GLOBAL_MAX = 20

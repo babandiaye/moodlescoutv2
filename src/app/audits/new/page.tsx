@@ -38,7 +38,8 @@ export default async function NewAuditPage({ searchParams }: Props) {
     .map(s => s.trim())
     .filter(Boolean)
 
-  const [platforms, llmConfigs] = await Promise.all([
+  const { visibleLlmsFilter } = await import('@/lib/llm-access')
+  const [platforms, llmConfigs, meRow] = await Promise.all([
     // Même l'admin ne cible que les plateformes actives depuis cette vue :
     // c'est une vue de lancement, pas une vue d'admin. La gestion
     // active/désactivée se fait dans /configuration.
@@ -48,9 +49,16 @@ export default async function NewAuditPage({ searchParams }: Props) {
       select: { id: true, name: true, url: true, version: true },
     }),
     prisma.llmConfig.findMany({
-      where: { isActive: true },
-      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-      select: { id: true, name: true, provider: true, model: true, isDefault: true },
+      where: {
+        isActive: true,
+        ...visibleLlmsFilter({ role: session.user.role, userId: session.user.id }),
+      },
+      orderBy: [{ scope: 'asc' }, { isDefault: 'desc' }, { name: 'asc' }],
+      select: { id: true, name: true, provider: true, model: true, scope: true, isDefault: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { defaultLlmConfigId: true },
     }),
   ])
 
@@ -83,6 +91,7 @@ export default async function NewAuditPage({ searchParams }: Props) {
     <NewAuditForm
       platforms={platforms}
       llmConfigs={llmConfigs}
+      myDefaultLlmConfigId={meRow?.defaultLlmConfigId ?? null}
       preselectedPlatformId={preselectedPlatformId}
       preselectedCourseIds={preselectedCourseIds}
       preselectedCategories={preselectedCategories}
